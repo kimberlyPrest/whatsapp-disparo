@@ -1,0 +1,1218 @@
+<!DOCTYPE html>
+<html class="dark" lang="pt-BR">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>WhatsApp BulkSender — Adapta</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: {
+      extend: {
+        colors: {
+          primary: '#25d466',
+          darkBg: '#0f172a',
+          sidebarBg: '#1e293b',
+          cardBg: '#334155',
+        },
+        fontFamily: { sans: ['Inter', 'sans-serif'] },
+      }
+    }
+  }
+</script>
+<style>
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #1e293b; }
+  ::-webkit-scrollbar-thumb { background: #475569; border-radius: 10px; }
+  ::-webkit-scrollbar-thumb:hover { background: #25d466; }
+  .page { display: none; }
+  .page.active { display: block; }
+  .nav-item { transition: all 0.15s; }
+  .nav-item.active { background: rgba(37,212,102,0.12); color: #25d466; }
+  .nav-item:not(.active):hover { background: rgba(255,255,255,0.05); }
+  .progress-ring__circle { transition: stroke-dashoffset 0.5s ease; transform: rotate(-90deg); transform-origin: 50% 50%; }
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
+  input[type="number"] { -moz-appearance: textfield; }
+  .msg-bubble { white-space: pre-wrap; word-break: break-word; }
+  .source-tab { transition: all 0.15s; }
+  .source-tab.active { background: #25d466; color: #0f172a; }
+  .accordion-body { overflow: hidden; transition: max-height 0.3s ease; max-height: 0; }
+  .accordion-body.open { max-height: 600px; }
+</style>
+</head>
+
+<body class="bg-darkBg text-slate-200 font-sans antialiased min-h-screen">
+
+<!-- ============================================================ LOGIN -->
+<div id="login-screen" class="min-h-screen flex items-center justify-center p-4">
+  <div class="w-full max-w-md">
+    <!-- Logo -->
+    <div class="text-center mb-8">
+      <div class="w-16 h-16 bg-primary rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg shadow-primary/30">
+        <svg class="w-9 h-9 text-darkBg" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946.003-6.556 5.338-11.891 11.893-11.891 3.181.001 6.167 1.24 8.413 3.488 2.245 2.248 3.481 5.236 3.48 8.414-.003 6.557-5.338 11.892-11.893 11.892-1.99-.001-3.951-.5-5.688-1.448l-6.305 1.654zm6.597-3.807c1.676.995 3.276 1.591 5.316 1.592 5.448 0 9.886-4.438 9.889-9.885.002-5.462-4.415-9.89-9.881-9.892-5.452 0-9.887 4.434-9.889 9.884-.001 2.225.651 3.891 1.746 5.634l-.999 3.648 3.73-.979zm11.367-7.843c-.31-.155-1.837-.906-2.119-1.01-.282-.103-.488-.155-.691.155-.204.311-.789 1.01-.967 1.217-.179.208-.359.233-.669.078-.31-.156-1.307-.482-2.49-1.537-.919-.818-1.54-1.83-1.72-2.141-.18-.311-.019-.479.136-.633.139-.139.31-.362.465-.544.155-.181.206-.311.31-.518.103-.207.052-.389-.026-.544-.077-.155-.691-1.67-.946-2.282-.249-.594-.501-.514-.691-.524-.179-.008-.385-.01-.591-.01-.206 0-.541.078-.825.389-.283.311-1.082 1.058-1.082 2.58s1.107 2.997 1.262 3.204c.155.207 2.178 3.327 5.277 4.664.737.317 1.313.507 1.761.649.741.235 1.415.202 1.948.122.594-.088 1.837-.751 2.094-1.477.258-.725.258-1.346.181-1.477-.077-.131-.282-.208-.591-.363z"/>
+        </svg>
+      </div>
+      <h1 class="text-2xl font-bold">BulkSender</h1>
+      <p class="text-slate-400 text-sm mt-1">Adapta · Evolution API</p>
+    </div>
+
+    <div class="bg-sidebarBg rounded-2xl border border-slate-700 shadow-2xl overflow-hidden">
+
+      <!-- Tabs login/signup -->
+      <div class="flex border-b border-slate-700">
+        <button id="tab-login-btn" onclick="switchAuthTab('login')"
+          class="flex-1 py-4 text-sm font-semibold border-b-2 border-primary text-primary transition-colors">
+          Entrar
+        </button>
+        <button id="tab-signup-btn" onclick="switchAuthTab('signup')"
+          class="flex-1 py-4 text-sm font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors">
+          Criar Conta
+        </button>
+      </div>
+
+      <!-- ---- LOGIN FORM ---- -->
+      <div id="auth-login" class="p-8 space-y-4">
+        <div id="login-error" class="hidden bg-red-500/10 border border-red-500/30 text-red-400 text-sm px-4 py-3 rounded-lg"></div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1.5">Email</label>
+          <input id="login-email" type="email" placeholder="seu@adapta.org"
+            class="w-full bg-darkBg border border-slate-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-primary text-slate-200 placeholder-slate-600"
+            onkeydown="if(event.key==='Enter') login()"/>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1.5">Senha</label>
+          <input id="login-password" type="password" placeholder="••••••••"
+            class="w-full bg-darkBg border border-slate-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-primary text-slate-200 placeholder-slate-600"
+            onkeydown="if(event.key==='Enter') login()"/>
+        </div>
+        <button onclick="login()" id="login-btn"
+          class="w-full py-3 bg-primary hover:bg-green-400 text-darkBg font-bold rounded-lg transition-colors flex items-center justify-center gap-2">
+          <svg id="login-spinner" class="hidden w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+          </svg>
+          Entrar
+        </button>
+        <p class="text-center text-xs text-slate-600 pt-1">Acesso restrito a emails @adapta.org</p>
+      </div>
+
+      <!-- ---- SIGNUP FORM ---- -->
+      <div id="auth-signup" class="hidden p-8 space-y-4">
+        <div id="signup-error"   class="hidden bg-red-500/10 border border-red-500/30 text-red-400 text-sm px-4 py-3 rounded-lg"></div>
+        <div id="signup-success" class="hidden bg-green-500/10 border border-green-500/30 text-green-400 text-sm px-4 py-3 rounded-lg"></div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1.5">Nome completo</label>
+          <input id="signup-name" type="text" placeholder="Seu Nome"
+            class="w-full bg-darkBg border border-slate-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-primary text-slate-200 placeholder-slate-600"
+            onkeydown="if(event.key==='Enter') signup()"/>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1.5">Email</label>
+          <input id="signup-email" type="email" placeholder="seu@adapta.org"
+            class="w-full bg-darkBg border border-slate-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-primary text-slate-200 placeholder-slate-600"
+            onkeydown="if(event.key==='Enter') signup()"/>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1.5">Senha</label>
+          <input id="signup-password" type="password" placeholder="Mín. 6 caracteres"
+            class="w-full bg-darkBg border border-slate-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-primary text-slate-200 placeholder-slate-600"
+            onkeydown="if(event.key==='Enter') signup()"/>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1.5">Confirmar senha</label>
+          <input id="signup-password2" type="password" placeholder="Repita a senha"
+            class="w-full bg-darkBg border border-slate-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-primary text-slate-200 placeholder-slate-600"
+            onkeydown="if(event.key==='Enter') signup()"/>
+        </div>
+        <button onclick="signup()" id="signup-btn"
+          class="w-full py-3 bg-primary hover:bg-green-400 text-darkBg font-bold rounded-lg transition-colors flex items-center justify-center gap-2">
+          <svg id="signup-spinner" class="hidden w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+          </svg>
+          Criar Conta
+        </button>
+        <p class="text-center text-xs text-slate-600 pt-1">Acesso restrito a emails @adapta.org</p>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ APP -->
+<div id="app-screen" class="hidden min-h-screen flex">
+
+  <!-- SIDEBAR -->
+  <aside class="w-64 bg-sidebarBg border-r border-slate-700 flex flex-col shrink-0 fixed h-full z-20">
+
+    <!-- Logo -->
+    <div class="p-5 border-b border-slate-700">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 bg-primary rounded-xl flex items-center justify-center shrink-0 shadow-md shadow-primary/30">
+          <svg class="w-5 h-5 text-darkBg" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946.003-6.556 5.338-11.891 11.893-11.891 3.181.001 6.167 1.24 8.413 3.488 2.245 2.248 3.481 5.236 3.48 8.414-.003 6.557-5.338 11.892-11.893 11.892-1.99-.001-3.951-.5-5.688-1.448l-6.305 1.654zm6.597-3.807c1.676.995 3.276 1.591 5.316 1.592 5.448 0 9.886-4.438 9.889-9.885.002-5.462-4.415-9.89-9.881-9.892-5.452 0-9.887 4.434-9.889 9.884-.001 2.225.651 3.891 1.746 5.634l-.999 3.648 3.73-.979zm11.367-7.843c-.31-.155-1.837-.906-2.119-1.01-.282-.103-.488-.155-.691.155-.204.311-.789 1.01-.967 1.217-.179.208-.359.233-.669.078-.31-.156-1.307-.482-2.49-1.537-.919-.818-1.54-1.83-1.72-2.141-.18-.311-.019-.479.136-.633.139-.139.31-.362.465-.544.155-.181.206-.311.31-.518.103-.207.052-.389-.026-.544-.077-.155-.691-1.67-.946-2.282-.249-.594-.501-.514-.691-.524-.179-.008-.385-.01-.591-.01-.206 0-.541.078-.825.389-.283.311-1.082 1.058-1.082 2.58s1.107 2.997 1.262 3.204c.155.207 2.178 3.327 5.277 4.664.737.317 1.313.507 1.761.649.741.235 1.415.202 1.948.122.594-.088 1.837-.751 2.094-1.477.258-.725.258-1.346.181-1.477-.077-.131-.282-.208-.591-.363z"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="text-sm font-bold leading-tight">BulkSender</h1>
+          <p class="text-[10px] text-slate-500">Adapta · Evolution API</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- User -->
+    <div class="px-5 py-3 border-b border-slate-700/60">
+      <p class="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Logado como</p>
+      <p id="sidebar-email" class="text-xs font-medium text-slate-300 truncate"></p>
+    </div>
+
+    <!-- Nav -->
+    <nav class="flex-1 p-3 space-y-1">
+      <button class="nav-item active w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium" id="nav-novo" onclick="navigate('novo')">
+        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
+        Novo Disparo
+      </button>
+      <button class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-slate-400" id="nav-historico" onclick="navigate('historico')">
+        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
+        Histórico
+      </button>
+      <button class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-slate-400" id="nav-config" onclick="navigate('config')">
+        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
+        Configuração
+      </button>
+    </nav>
+
+    <!-- Logout -->
+    <div class="p-3 border-t border-slate-700">
+      <button onclick="logout()" class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-all">
+        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
+        Sair
+      </button>
+    </div>
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <main class="flex-1 ml-64 overflow-y-auto min-h-screen">
+
+    <!-- ========================================= PAGE: NOVO DISPARO -->
+    <div id="page-novo" class="page active p-8 max-w-5xl mx-auto space-y-6">
+
+      <div>
+        <h2 class="text-xl font-bold">Novo Disparo</h2>
+        <p class="text-slate-400 text-sm mt-1">Configure e inicie um novo envio em massa via WhatsApp.</p>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        <!-- Source selection -->
+        <div class="bg-sidebarBg rounded-xl p-6 border border-slate-700 shadow-xl">
+          <label class="block text-sm font-semibold text-slate-300 mb-4">Fonte de Contatos</label>
+
+          <div class="flex gap-2 mb-4 p-1 bg-darkBg rounded-lg">
+            <button id="src-sheets-btn" class="source-tab active flex-1 py-2 text-sm font-semibold rounded-md flex items-center justify-center gap-2" onclick="setSource('sheets')">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
+              Google Sheets
+            </button>
+            <button id="src-csv-btn" class="source-tab flex-1 py-2 text-sm font-semibold rounded-md text-slate-400 flex items-center justify-center gap-2" onclick="setSource('csv')">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
+              Upload CSV
+            </button>
+          </div>
+
+          <!-- Sheets input -->
+          <div id="source-sheets">
+            <div class="flex gap-2">
+              <input id="sheet-url" type="text"
+                class="flex-1 bg-darkBg border border-slate-700 rounded-lg text-sm px-4 py-2.5 focus:outline-none focus:border-primary text-slate-200"
+                placeholder="https://docs.google.com/spreadsheets/d/..."/>
+              <button onclick="loadContacts()" id="load-btn"
+                class="bg-primary hover:bg-green-400 text-darkBg font-bold py-2.5 px-4 rounded-lg transition-colors text-sm flex items-center gap-2 shrink-0">
+                <svg id="load-spinner" class="w-4 h-4 hidden animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+                Carregar
+              </button>
+            </div>
+            <p class="mt-2 text-[11px] text-slate-500">Planilha deve ter colunas "Nome" e "Telefone".</p>
+          </div>
+
+          <!-- CSV input -->
+          <div id="source-csv" class="hidden">
+            <div class="border-2 border-dashed border-slate-700 rounded-lg p-6 text-center hover:border-primary/60 transition-colors cursor-pointer" onclick="document.getElementById('csv-file').click()">
+              <svg class="w-8 h-8 text-slate-500 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
+              <p class="text-sm text-slate-400">Clique para selecionar ou arraste o arquivo CSV</p>
+              <p class="text-[11px] text-slate-600 mt-1">Colunas: Nome, Telefone</p>
+            </div>
+            <input id="csv-file" type="file" accept=".csv" class="hidden" onchange="uploadCsv(event)"/>
+            <p id="csv-filename" class="mt-2 text-xs text-primary hidden"></p>
+          </div>
+        </div>
+
+        <!-- Template -->
+        <div class="bg-sidebarBg rounded-xl p-6 border border-slate-700 shadow-xl">
+          <label class="block text-sm font-semibold text-slate-300 mb-3">Template da Mensagem</label>
+          <textarea id="template" rows="5"
+            class="w-full bg-darkBg border border-slate-700 rounded-lg text-sm px-4 py-2.5 focus:outline-none focus:border-primary text-slate-200 resize-none">Oi, tudo bem, {primeiro_nome}? Me chamo Kimberly, sou consultora de IA da Adapta, irei ser a responsável pelo teu acompanhamento do Skip. Estamos finalizando alguns detalhes e assim que finalizarmos, eu te envio o link para agendamento!</textarea>
+          <button onclick="insertPlaceholder()"
+            class="mt-2 text-[11px] bg-slate-800 text-primary border border-primary/30 px-2.5 py-1 rounded-lg hover:bg-primary hover:text-darkBg transition-all">
+            + {primeiro_nome}
+          </button>
+        </div>
+
+      </div>
+
+      <!-- Batch config (accordion) -->
+      <div class="bg-sidebarBg rounded-xl border border-slate-700 shadow-xl overflow-hidden">
+        <button onclick="toggleAccordion()" class="w-full flex items-center justify-between px-6 py-4 text-sm font-semibold text-slate-300 hover:bg-slate-700/30 transition-colors">
+          <span class="flex items-center gap-2">
+            <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
+            Configuração de Lotes
+          </span>
+          <svg id="accordion-arrow" class="w-4 h-4 text-slate-500 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 9l-7 7-7-7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
+        </button>
+        <div id="accordion-body" class="accordion-body">
+          <div class="px-6 pb-6 pt-2 grid grid-cols-2 md:grid-cols-3 gap-4 border-t border-slate-700/50">
+            <div class="col-span-2 md:col-span-3">
+              <div class="grid grid-cols-3 gap-4">
+                <div>
+                  <p class="flex items-center gap-1.5 text-[11px] font-bold text-red-400 uppercase mb-2"><span class="w-2 h-2 rounded-full bg-red-400"></span>Lote Principal</p>
+                  <label class="text-[10px] text-slate-500 block mb-1">A cada N msgs</label>
+                  <input id="lot-every" type="number" value="150" min="1" class="w-full bg-darkBg border border-slate-700 rounded-lg px-3 py-2 text-sm text-primary focus:outline-none focus:border-primary"/>
+                  <div class="grid grid-cols-2 gap-2 mt-2">
+                    <div>
+                      <label class="text-[10px] text-slate-500 block mb-1">Mín (s)</label>
+                      <input id="lot-min" type="number" value="500" min="1" class="w-full bg-darkBg border border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary"/>
+                    </div>
+                    <div>
+                      <label class="text-[10px] text-slate-500 block mb-1">Máx (s)</label>
+                      <input id="lot-max" type="number" value="600" min="1" class="w-full bg-darkBg border border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary"/>
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <p class="flex items-center gap-1.5 text-[11px] font-bold text-yellow-400 uppercase mb-2"><span class="w-2 h-2 rounded-full bg-yellow-400"></span>Sublote</p>
+                  <label class="text-[10px] text-slate-500 block mb-1">A cada N msgs</label>
+                  <input id="sub-every" type="number" value="30" min="1" class="w-full bg-darkBg border border-slate-700 rounded-lg px-3 py-2 text-sm text-yellow-400 focus:outline-none focus:border-yellow-400"/>
+                  <div class="grid grid-cols-2 gap-2 mt-2">
+                    <div>
+                      <label class="text-[10px] text-slate-500 block mb-1">Mín (s)</label>
+                      <input id="sub-min" type="number" value="158" min="1" class="w-full bg-darkBg border border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary"/>
+                    </div>
+                    <div>
+                      <label class="text-[10px] text-slate-500 block mb-1">Máx (s)</label>
+                      <input id="sub-max" type="number" value="200" min="1" class="w-full bg-darkBg border border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary"/>
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <p class="flex items-center gap-1.5 text-[11px] font-bold text-green-400 uppercase mb-2"><span class="w-2 h-2 rounded-full bg-green-400"></span>Individual</p>
+                  <label class="text-[10px] text-slate-500 block mb-1">&nbsp;</label>
+                  <div class="invisible"><input type="number" class="w-full bg-darkBg border border-slate-700 rounded-lg px-3 py-2 text-sm"/></div>
+                  <div class="grid grid-cols-2 gap-2 mt-2">
+                    <div>
+                      <label class="text-[10px] text-slate-500 block mb-1">Mín (s)</label>
+                      <input id="msg-min" type="number" value="25" min="1" class="w-full bg-darkBg border border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary"/>
+                    </div>
+                    <div>
+                      <label class="text-[10px] text-slate-500 block mb-1">Máx (s)</label>
+                      <input id="msg-max" type="number" value="50" min="1" class="w-full bg-darkBg border border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary"/>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Contacts table -->
+      <div class="bg-sidebarBg rounded-xl border border-slate-700 shadow-xl overflow-hidden">
+        <div class="px-6 py-4 border-b border-slate-700 flex justify-between items-center">
+          <h3 class="font-semibold text-slate-200">Contatos</h3>
+          <div class="flex items-center gap-3">
+            <span id="contacts-count" class="text-xs text-slate-500">Nenhum contato</span>
+            <span id="estimate-badge" class="hidden text-xs bg-slate-700/80 px-3 py-1 rounded-full text-primary font-medium"></span>
+          </div>
+        </div>
+        <div class="overflow-x-auto max-h-64 overflow-y-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-darkBg/60 text-slate-400 uppercase text-[10px] sticky top-0">
+              <tr>
+                <th class="px-6 py-3 font-medium">#</th>
+                <th class="px-6 py-3 font-medium">Nome</th>
+                <th class="px-6 py-3 font-medium">Telefone</th>
+                <th class="px-6 py-3 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody id="contacts-tbody" class="divide-y divide-slate-700/40">
+              <tr><td colspan="4" class="px-6 py-8 text-center text-slate-500 text-sm">Carregue uma planilha ou CSV para ver os contatos.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Dispatch area -->
+      <div id="dispatch-area" class="hidden">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+          <!-- Progress -->
+          <div class="bg-sidebarBg rounded-xl p-6 border border-slate-700 shadow-xl flex flex-col items-center">
+            <h3 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Progresso</h3>
+            <div class="relative flex items-center justify-center">
+              <svg class="w-36 h-36" viewBox="0 0 192 192">
+                <circle class="text-slate-700" cx="96" cy="96" fill="transparent" r="80" stroke="currentColor" stroke-width="10"/>
+                <circle id="progress-circle" class="text-primary progress-ring__circle" cx="96" cy="96" fill="transparent"
+                  r="80" stroke="currentColor" stroke-dasharray="502.65" stroke-dashoffset="502.65"
+                  stroke-linecap="round" stroke-width="10"/>
+              </svg>
+              <div class="absolute flex flex-col items-center">
+                <span id="progress-pct" class="text-3xl font-bold">0%</span>
+                <span class="text-[10px] text-slate-500 uppercase tracking-widest mt-0.5">Concluído</span>
+              </div>
+            </div>
+            <div class="mt-5 grid grid-cols-2 w-full gap-3 text-center">
+              <div>
+                <p id="sent-count" class="text-xl font-bold text-primary">0</p>
+                <p class="text-[10px] text-slate-500 uppercase">Enviados</p>
+              </div>
+              <div>
+                <p id="remaining-count" class="text-xl font-bold text-slate-300">—</p>
+                <p class="text-[10px] text-slate-500 uppercase">Restantes</p>
+              </div>
+            </div>
+            <div id="dispatch-status" class="mt-4 text-xs text-slate-500 text-center min-h-[2rem] w-full px-2"></div>
+          </div>
+
+          <!-- Log -->
+          <div class="lg:col-span-2 bg-sidebarBg rounded-xl border border-slate-700 shadow-xl flex flex-col" style="height:460px">
+            <div class="px-5 py-3.5 border-b border-slate-700 flex justify-between items-center shrink-0">
+              <h3 class="font-semibold text-sm">Log em Tempo Real</h3>
+              <span id="live-indicator" class="hidden items-center gap-2">
+                <span class="w-2 h-2 rounded-full bg-primary animate-pulse"></span>
+                <span class="text-xs text-slate-400">Ao vivo</span>
+              </span>
+            </div>
+            <div class="flex-1 overflow-y-auto" id="log-container">
+              <table class="w-full text-left text-sm">
+                <thead class="sticky top-0 bg-darkBg/90 backdrop-blur-sm text-slate-500 text-[10px] uppercase font-bold z-10">
+                  <tr>
+                    <th class="px-4 py-2.5 border-b border-slate-700/50">#</th>
+                    <th class="px-4 py-2.5 border-b border-slate-700/50">Destinatário</th>
+                    <th class="px-4 py-2.5 border-b border-slate-700/50">Status</th>
+                    <th class="px-4 py-2.5 border-b border-slate-700/50">Hora</th>
+                  </tr>
+                </thead>
+                <tbody id="log-tbody" class="divide-y divide-slate-800">
+                  <tr><td colspan="4" class="px-4 py-8 text-center text-slate-500 text-xs">Aguardando início do disparo...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Start button -->
+      <div class="flex items-center gap-4">
+        <button id="start-btn" onclick="startDispatch()"
+          class="py-3 px-8 bg-primary hover:bg-green-400 text-darkBg font-black uppercase tracking-widest rounded-xl transition-all shadow-lg flex items-center gap-2">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
+          Iniciar Disparo
+        </button>
+        <a id="download-btn" class="hidden py-3 px-6 border border-primary/40 text-primary hover:bg-primary hover:text-darkBg font-semibold text-sm rounded-xl transition-all" href="#" onclick="downloadLog()">
+          ↓ Baixar Log CSV
+        </a>
+      </div>
+
+    </div><!-- /page-novo -->
+
+    <!-- ========================================= PAGE: HISTÓRICO -->
+    <div id="page-historico" class="page p-8 max-w-5xl mx-auto space-y-6">
+
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-xl font-bold">Histórico de Disparos</h2>
+          <p class="text-slate-400 text-sm mt-1">Todos os seus disparos com status e detalhes.</p>
+        </div>
+        <button onclick="loadHistory()" class="text-sm text-slate-400 hover:text-primary flex items-center gap-1.5 transition-colors">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
+          Atualizar
+        </button>
+      </div>
+
+      <div id="history-list" class="space-y-3">
+        <div class="py-16 text-center text-slate-500">
+          <svg class="w-12 h-12 mx-auto mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
+          <p>Nenhum disparo encontrado.</p>
+        </div>
+      </div>
+
+      <!-- Logs modal -->
+      <div id="logs-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+        <div class="bg-sidebarBg rounded-2xl border border-slate-700 shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col">
+          <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700 shrink-0">
+            <h3 class="font-semibold" id="modal-title">Logs do Disparo</h3>
+            <button onclick="closeModal()" class="text-slate-400 hover:text-white transition-colors">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
+            </button>
+          </div>
+          <div class="flex-1 overflow-y-auto" id="modal-logs-container">
+            <table class="w-full text-sm text-left">
+              <thead class="sticky top-0 bg-darkBg text-[10px] uppercase text-slate-500 font-bold">
+                <tr>
+                  <th class="px-5 py-3">#</th>
+                  <th class="px-5 py-3">Nome</th>
+                  <th class="px-5 py-3">Telefone</th>
+                  <th class="px-5 py-3">Status</th>
+                  <th class="px-5 py-3">Horário</th>
+                </tr>
+              </thead>
+              <tbody id="modal-logs-tbody" class="divide-y divide-slate-800"></tbody>
+            </table>
+          </div>
+          <div class="px-6 py-3 border-t border-slate-700 shrink-0 flex justify-between items-center">
+            <span id="modal-stats" class="text-xs text-slate-500"></span>
+            <button id="modal-download" onclick="downloadModalLogs()" class="text-xs text-primary hover:underline">↓ Exportar CSV</button>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /page-historico -->
+
+    <!-- ========================================= PAGE: CONFIGURAÇÃO -->
+    <div id="page-config" class="page p-8 max-w-2xl mx-auto space-y-6">
+
+      <div>
+        <h2 class="text-xl font-bold">Configuração</h2>
+        <p class="text-slate-400 text-sm mt-1">Configure suas credenciais para usar o sistema.</p>
+      </div>
+
+      <!-- Evolution API -->
+      <div class="bg-sidebarBg rounded-xl p-6 border border-slate-700 shadow-xl space-y-4">
+        <h3 class="font-semibold text-slate-200 flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-primary"></span>
+          Evolution API
+        </h3>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1.5">URL da API</label>
+          <input id="cfg-api-url" type="text" placeholder="https://sua-instancia.exemplo.com"
+            class="w-full bg-darkBg border border-slate-700 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-primary text-slate-200"/>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1.5">API Key</label>
+          <input id="cfg-api-key" type="password" placeholder="••••••••••••••••"
+            class="w-full bg-darkBg border border-slate-700 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-primary text-slate-200"/>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1.5">Nome da Instância</label>
+          <input id="cfg-instance" type="text" placeholder="minha-instancia"
+            class="w-full bg-darkBg border border-slate-700 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-primary text-slate-200"/>
+        </div>
+      </div>
+
+      <!-- Google Credentials -->
+      <div class="bg-sidebarBg rounded-xl p-6 border border-slate-700 shadow-xl space-y-4">
+        <h3 class="font-semibold text-slate-200 flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-blue-400"></span>
+          Google Service Account
+          <span id="google-creds-badge" class="hidden ml-auto text-[10px] bg-green-500/15 text-green-400 border border-green-500/30 px-2 py-0.5 rounded-full">Configurado</span>
+        </h3>
+        <p class="text-xs text-slate-500">Cole o conteúdo do arquivo JSON da Service Account do Google. Necessário para ler Google Sheets.</p>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1.5">credentials.json</label>
+          <textarea id="cfg-google-creds" rows="8" placeholder='{"type": "service_account", "project_id": "...", ...}'
+            class="w-full bg-darkBg border border-slate-700 rounded-lg px-4 py-2.5 text-xs font-mono focus:outline-none focus:border-primary text-slate-200 resize-none"></textarea>
+        </div>
+        <p class="text-[11px] text-slate-600">Deixe em branco para manter as credenciais existentes.</p>
+      </div>
+
+      <div id="config-feedback" class="hidden"></div>
+
+      <button onclick="saveConfig()" id="save-btn"
+        class="py-3 px-8 bg-primary hover:bg-green-400 text-darkBg font-bold rounded-xl transition-colors flex items-center gap-2">
+        <svg id="save-spinner" class="hidden w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        </svg>
+        Salvar Configurações
+      </button>
+
+    </div><!-- /page-config -->
+
+  </main>
+</div>
+
+<!-- ============================================================ SCRIPT -->
+<script>
+// ================================================================
+// SUPABASE
+// ================================================================
+const SUPABASE_URL  = 'https://aucdgkmujqzhginokegx.supabase.co';
+const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF1Y2Rna211anF6aGdpbm9rZWd4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMzMjM4MDgsImV4cCI6MjA4ODg5OTgwOH0.s5TJJadX45oxRj6_HZu-bKbdAsn_1QDo_YOy5kV0-ao';
+const sbClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+
+let accessToken = null;
+let contacts    = [];
+let csvContacts = [];
+let csvFilename = '';
+let currentSource = 'sheets';
+let dispatchRunning = false;
+let currentDispatchId = null;
+let modalLogsData = [];
+const CIRCUMFERENCE = 502.65;
+
+window.onbeforeunload = () => dispatchRunning ? 'Disparo em andamento.' : undefined;
+
+// ================================================================
+// INIT
+// ================================================================
+async function init() {
+  const { data: { session } } = await sbClient.auth.getSession();
+  if (session) {
+    accessToken = session.access_token;
+    showApp(session.user.email);
+  } else {
+    showLogin();
+  }
+
+  sbClient.auth.onAuthStateChange((event, session) => {
+    if (event === 'SIGNED_OUT' || !session) showLogin();
+  });
+}
+
+function showLogin() {
+  document.getElementById('login-screen').classList.remove('hidden');
+  document.getElementById('app-screen').classList.add('hidden');
+}
+
+function showApp(email) {
+  document.getElementById('login-screen').classList.add('hidden');
+  document.getElementById('app-screen').classList.remove('hidden');
+  document.getElementById('sidebar-email').textContent = email;
+  loadConfig();
+}
+
+// ================================================================
+// AUTH TABS
+// ================================================================
+function switchAuthTab(tab) {
+  const isLogin = tab === 'login';
+  document.getElementById('auth-login').classList.toggle('hidden', !isLogin);
+  document.getElementById('auth-signup').classList.toggle('hidden', isLogin);
+
+  const loginBtn  = document.getElementById('tab-login-btn');
+  const signupBtn = document.getElementById('tab-signup-btn');
+  loginBtn.classList.toggle('border-primary',  isLogin);
+  loginBtn.classList.toggle('text-primary',     isLogin);
+  loginBtn.classList.toggle('border-transparent', !isLogin);
+  loginBtn.classList.toggle('text-slate-400',   !isLogin);
+  signupBtn.classList.toggle('border-primary',  !isLogin);
+  signupBtn.classList.toggle('text-primary',    !isLogin);
+  signupBtn.classList.toggle('border-transparent', isLogin);
+  signupBtn.classList.toggle('text-slate-400',  isLogin);
+}
+
+// ================================================================
+// AUTH
+// ================================================================
+async function login() {
+  const email    = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  const errBox   = document.getElementById('login-error');
+
+  if (!email || !password) { showError(errBox, 'Preencha email e senha.'); return; }
+  if (!email.endsWith('@adapta.org')) { showError(errBox, 'Acesso restrito a emails @adapta.org.'); return; }
+
+  setAuthLoading('login', true);
+  errBox.classList.add('hidden');
+
+  const { data, error } = await sbClient.auth.signInWithPassword({ email, password });
+  setAuthLoading('login', false);
+
+  if (error) { showError(errBox, traduzirErro(error.message)); return; }
+  accessToken = data.session.access_token;
+  showApp(data.user.email);
+}
+
+async function signup() {
+  const name      = document.getElementById('signup-name').value.trim();
+  const email     = document.getElementById('signup-email').value.trim();
+  const password  = document.getElementById('signup-password').value;
+  const password2 = document.getElementById('signup-password2').value;
+  const errBox    = document.getElementById('signup-error');
+  const okBox     = document.getElementById('signup-success');
+
+  errBox.classList.add('hidden');
+  okBox.classList.add('hidden');
+
+  if (!name)     { showError(errBox, 'Informe seu nome.'); return; }
+  if (!email)    { showError(errBox, 'Informe o email.'); return; }
+  if (!email.endsWith('@adapta.org')) { showError(errBox, 'Acesso restrito a emails @adapta.org.'); return; }
+  if (password.length < 6) { showError(errBox, 'A senha deve ter pelo menos 6 caracteres.'); return; }
+  if (password !== password2) { showError(errBox, 'As senhas não coincidem.'); return; }
+
+  setAuthLoading('signup', true);
+
+  const { data, error } = await sbClient.auth.signUp({
+    email,
+    password,
+    options: { data: { full_name: name } },
+  });
+  setAuthLoading('signup', false);
+
+  if (error) { showError(errBox, traduzirErro(error.message)); return; }
+
+  // Se o Supabase exigir confirmação de email, session será null
+  if (data.session) {
+    accessToken = data.session.access_token;
+    showApp(data.user.email);
+  } else {
+    okBox.textContent = 'Conta criada! Verifique seu email para confirmar o cadastro.';
+    okBox.classList.remove('hidden');
+    document.getElementById('signup-name').value = '';
+    document.getElementById('signup-email').value = '';
+    document.getElementById('signup-password').value = '';
+    document.getElementById('signup-password2').value = '';
+  }
+}
+
+async function logout() {
+  await sbClient.auth.signOut();
+  accessToken = null;
+  contacts = [];
+  showLogin();
+}
+
+function setAuthLoading(form, on) {
+  document.getElementById(`${form}-spinner`).classList.toggle('hidden', !on);
+  document.getElementById(`${form}-btn`).disabled = on;
+}
+
+function showError(el, msg) {
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+function traduzirErro(msg) {
+  if (msg.includes('Invalid login credentials')) return 'Email ou senha incorretos.';
+  if (msg.includes('Email not confirmed'))        return 'Email não confirmado. Verifique sua caixa de entrada.';
+  if (msg.includes('User already registered'))    return 'Este email já está cadastrado.';
+  if (msg.includes('Password should be'))         return 'A senha deve ter pelo menos 6 caracteres.';
+  return msg;
+}
+
+// ================================================================
+// NAVIGATION
+// ================================================================
+function navigate(page) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => {
+    n.classList.remove('active');
+    n.classList.add('text-slate-400');
+  });
+  document.getElementById('page-' + page).classList.add('active');
+  const btn = document.getElementById('nav-' + page);
+  btn.classList.add('active');
+  btn.classList.remove('text-slate-400');
+
+  if (page === 'historico') loadHistory();
+  if (page === 'config') loadConfig();
+}
+
+// ================================================================
+// SOURCE TOGGLE
+// ================================================================
+function setSource(src) {
+  currentSource = src;
+  const isSheets = src === 'sheets';
+  document.getElementById('source-sheets').classList.toggle('hidden', !isSheets);
+  document.getElementById('source-csv').classList.toggle('hidden', isSheets);
+  document.getElementById('src-sheets-btn').classList.toggle('active', isSheets);
+  document.getElementById('src-csv-btn').classList.toggle('active', !isSheets);
+  if (!isSheets) {
+    document.getElementById('src-sheets-btn').classList.add('text-slate-400');
+    document.getElementById('src-csv-btn').classList.remove('text-slate-400');
+  } else {
+    document.getElementById('src-csv-btn').classList.add('text-slate-400');
+    document.getElementById('src-sheets-btn').classList.remove('text-slate-400');
+  }
+  contacts = [];
+  renderTable([]);
+  document.getElementById('contacts-count').textContent = 'Nenhum contato';
+  document.getElementById('estimate-badge').classList.add('hidden');
+}
+
+// ================================================================
+// ACCORDION
+// ================================================================
+function toggleAccordion() {
+  const body  = document.getElementById('accordion-body');
+  const arrow = document.getElementById('accordion-arrow');
+  body.classList.toggle('open');
+  arrow.style.transform = body.classList.contains('open') ? 'rotate(180deg)' : '';
+}
+
+// ================================================================
+// HELPERS
+// ================================================================
+function getCfg() {
+  return {
+    lot_every: parseInt(document.getElementById('lot-every').value) || 150,
+    lot_min: parseFloat(document.getElementById('lot-min').value) || 500,
+    lot_max: parseFloat(document.getElementById('lot-max').value) || 600,
+    sub_every: parseInt(document.getElementById('sub-every').value) || 30,
+    sub_min: parseFloat(document.getElementById('sub-min').value) || 158,
+    sub_max: parseFloat(document.getElementById('sub-max').value) || 200,
+    msg_min: parseFloat(document.getElementById('msg-min').value) || 25,
+    msg_max: parseFloat(document.getElementById('msg-max').value) || 50,
+  };
+}
+
+function estimateTime(total, c) {
+  const al = (c.lot_min + c.lot_max) / 2;
+  const as_ = (c.sub_min + c.sub_max) / 2;
+  const am = (c.msg_min + c.msg_max) / 2;
+  let s = 0;
+  for (let i = 1; i <= total; i++) {
+    if (i % c.lot_every === 0) s += al;
+    else if (i % c.sub_every === 0) s += as_;
+    else s += am;
+  }
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return `~${h}h ${String(m).padStart(2,'0')}min`;
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function initials(name) {
+  return name.split(' ').slice(0, 2).map(n => n[0] || '').join('').toUpperCase();
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'});
+}
+
+function insertPlaceholder() {
+  const ta = document.getElementById('template');
+  const p  = ta.selectionStart;
+  ta.value = ta.value.slice(0, p) + '{primeiro_nome}' + ta.value.slice(p);
+  ta.focus();
+  ta.selectionStart = ta.selectionEnd = p + 15;
+}
+
+async function apiFetch(path, opts = {}) {
+  const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}`, ...(opts.headers || {}) };
+  const resp = await fetch(path, { ...opts, headers });
+  if (!resp.ok) {
+    const e = await resp.json().catch(() => ({ detail: resp.statusText }));
+    throw new Error(e.detail || 'Erro na requisição.');
+  }
+  return resp.json();
+}
+
+// ================================================================
+// LOAD CONTACTS (Sheets)
+// ================================================================
+async function loadContacts() {
+  const url = document.getElementById('sheet-url').value.trim();
+  if (!url) { alert('Cole a URL da planilha primeiro.'); return; }
+
+  document.getElementById('load-spinner').classList.remove('hidden');
+  document.getElementById('load-btn').disabled = true;
+
+  try {
+    const data = await apiFetch('/api/load', { method: 'POST', body: JSON.stringify({ sheet_url: url }) });
+    contacts = data.contacts;
+    renderTable(contacts);
+    updateContactsInfo(contacts);
+  } catch (e) {
+    alert('Erro: ' + e.message);
+  } finally {
+    document.getElementById('load-spinner').classList.add('hidden');
+    document.getElementById('load-btn').disabled = false;
+  }
+}
+
+// ================================================================
+// UPLOAD CSV
+// ================================================================
+async function uploadCsv(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const resp = await fetch('/api/upload-csv', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${accessToken}` },
+      body: formData,
+    });
+    if (!resp.ok) { const e = await resp.json(); throw new Error(e.detail); }
+    const data = await resp.json();
+    contacts = data.contacts;
+    csvFilename = data.filename;
+    document.getElementById('csv-filename').textContent = `✓ ${data.filename} — ${contacts.length} contatos`;
+    document.getElementById('csv-filename').classList.remove('hidden');
+    renderTable(contacts);
+    updateContactsInfo(contacts);
+  } catch (e) {
+    alert('Erro ao processar CSV: ' + e.message);
+  }
+}
+
+function updateContactsInfo(list) {
+  const cfg = getCfg();
+  document.getElementById('contacts-count').textContent = list.length + ' contatos';
+  const badge = document.getElementById('estimate-badge');
+  badge.textContent = estimateTime(list.length, cfg);
+  badge.classList.remove('hidden');
+  document.getElementById('remaining-count').textContent = list.length;
+}
+
+// ================================================================
+// TABLE
+// ================================================================
+function renderTable(list) {
+  const tb = document.getElementById('contacts-tbody');
+  if (!list.length) {
+    tb.innerHTML = '<tr><td colspan="4" class="px-6 py-8 text-center text-slate-500 text-sm">Nenhum contato carregado.</td></tr>';
+    return;
+  }
+  tb.innerHTML = list.map((c, i) => `
+    <tr class="hover:bg-slate-800/40" id="row-${i}">
+      <td class="px-6 py-2.5 text-slate-500 text-xs">${i + 1}</td>
+      <td class="px-6 py-2.5 font-medium text-slate-200">${esc(c.name)}</td>
+      <td class="px-6 py-2.5 text-slate-400 font-mono text-xs">${c.phone}</td>
+      <td class="px-6 py-2.5"><span class="status-badge px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 text-[10px] font-bold uppercase">Pronto</span></td>
+    </tr>`).join('');
+}
+
+// ================================================================
+// DISPATCH
+// ================================================================
+async function startDispatch() {
+  if (dispatchRunning) return;
+  if (!contacts.length) { alert('Carregue os contatos primeiro.'); return; }
+  if (!confirm(`Confirma o disparo para ${contacts.length} contatos?`)) return;
+
+  const cfg = getCfg();
+  const payload = {
+    source_type: currentSource,
+    sheet_url: currentSource === 'sheets' ? document.getElementById('sheet-url').value : null,
+    contacts_json: currentSource === 'csv' ? JSON.stringify(contacts) : null,
+    source_filename: currentSource === 'csv' ? csvFilename : null,
+    template: document.getElementById('template').value,
+    ...cfg,
+  };
+
+  try {
+    const data = await apiFetch('/api/dispatch/start', { method: 'POST', body: JSON.stringify(payload) });
+    currentDispatchId = data.dispatch_id;
+    dispatchRunning = true;
+
+    document.getElementById('dispatch-area').classList.remove('hidden');
+    document.getElementById('start-btn').disabled = true;
+    document.getElementById('start-btn').classList.add('opacity-50', 'cursor-not-allowed');
+    document.getElementById('live-indicator').classList.remove('hidden');
+    document.getElementById('live-indicator').classList.add('flex');
+    document.getElementById('log-tbody').innerHTML = '';
+    document.getElementById('download-btn').classList.add('hidden');
+
+    listenSSE();
+  } catch (e) {
+    alert('Erro ao iniciar: ' + e.message);
+  }
+}
+
+function listenSSE() {
+  const src = new EventSource(`/api/dispatch/stream?token=${encodeURIComponent(accessToken)}`);
+
+  src.onmessage = (e) => {
+    const ev = JSON.parse(e.data);
+    if (ev.type === 'ping') return;
+    handleEvent(ev);
+    if (ev.type === 'done') {
+      src.close();
+      dispatchRunning = false;
+      document.getElementById('live-indicator').classList.add('hidden');
+      document.getElementById('live-indicator').classList.remove('flex');
+      document.getElementById('start-btn').disabled = false;
+      document.getElementById('start-btn').classList.remove('opacity-50', 'cursor-not-allowed');
+    }
+  };
+
+  src.onerror = () => {
+    src.close();
+    dispatchRunning = false;
+    document.getElementById('live-indicator').classList.add('hidden');
+  };
+}
+
+function handleEvent(ev) {
+  if (ev.type === 'sent') {
+    const pct = ev.index / ev.total;
+    document.getElementById('progress-circle').setAttribute('stroke-dashoffset', CIRCUMFERENCE * (1 - pct));
+    document.getElementById('progress-pct').textContent = Math.round(pct * 100) + '%';
+    document.getElementById('sent-count').textContent = ev.ok;
+    document.getElementById('remaining-count').textContent = ev.total - ev.index;
+    document.getElementById('dispatch-status').textContent = `Enviando ${ev.index}/${ev.total}...`;
+    updateRowStatus(ev.index - 1, ev.status);
+    prependLogRow(ev);
+  } else if (ev.type === 'pause') {
+    document.getElementById('dispatch-status').innerHTML =
+      `<span class="text-yellow-400">⏸ ${esc(ev.reason)}</span><br><span>${ev.seconds}s restantes</span>`;
+  } else if (ev.type === 'done') {
+    document.getElementById('progress-circle').setAttribute('stroke-dashoffset', 0);
+    document.getElementById('progress-pct').textContent = '100%';
+    document.getElementById('remaining-count').textContent = '0';
+    document.getElementById('dispatch-status').innerHTML =
+      `<span class="text-primary font-semibold">✓ Concluído!</span><br>${ev.ok} enviados · ${ev.fail} erros`;
+    document.getElementById('download-btn').classList.remove('hidden');
+  }
+}
+
+function updateRowStatus(idx, status) {
+  const row = document.getElementById('row-' + idx);
+  if (!row) return;
+  const badge = row.querySelector('.status-badge');
+  if (!badge) return;
+  if (status === 'success') {
+    badge.className = 'status-badge px-2 py-0.5 rounded-full bg-green-500/10 text-green-400 text-[10px] font-bold uppercase';
+    badge.textContent = 'Enviado';
+  } else {
+    badge.className = 'status-badge px-2 py-0.5 rounded-full bg-red-500/10 text-red-400 text-[10px] font-bold uppercase';
+    badge.textContent = 'Erro';
+  }
+}
+
+function prependLogRow(ev) {
+  const tbody = document.getElementById('log-tbody');
+  const placeholder = tbody.querySelector('td[colspan]');
+  if (placeholder) placeholder.closest('tr').remove();
+
+  const ok   = ev.status === 'success';
+  const time = new Date().toLocaleTimeString('pt-BR');
+  const tr   = document.createElement('tr');
+  tr.className = ok ? 'bg-primary/5' : 'bg-red-500/5';
+  tr.innerHTML = `
+    <td class="px-4 py-2.5 text-slate-500 text-xs font-mono">${ev.index}</td>
+    <td class="px-4 py-2.5 font-medium text-sm">${esc(ev.name)}<span class="text-slate-500 font-normal text-xs"> · ${ev.phone.slice(0,-4)}****</span></td>
+    <td class="px-4 py-2.5">${ok
+      ? `<span class="text-primary text-xs">✓ Enviado</span>`
+      : `<span class="text-red-400 text-xs">✗ ${esc(ev.error || 'Erro')}</span>`}</td>
+    <td class="px-4 py-2.5 text-slate-500 text-xs font-mono">${time}</td>`;
+  tbody.insertBefore(tr, tbody.firstChild);
+  document.getElementById('log-container').scrollTop = 0;
+}
+
+async function downloadLog() {
+  if (!currentDispatchId) return;
+  try {
+    const data = await apiFetch(`/api/dispatches/${currentDispatchId}/logs`);
+    const rows = [['#','Nome','Telefone','Status','Erro','Horário']];
+    data.logs.forEach(l => rows.push([l.contact_index, l.contact_name, l.contact_phone, l.status, l.error_message || '', l.sent_at]));
+    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+    a.download = `disparo_${currentDispatchId.slice(0,8)}.csv`;
+    a.click();
+  } catch(e) { alert('Erro ao baixar log: ' + e.message); }
+}
+
+// ================================================================
+// HISTORY
+// ================================================================
+async function loadHistory() {
+  document.getElementById('history-list').innerHTML = `
+    <div class="py-10 text-center text-slate-500 text-sm">
+      <svg class="w-6 h-6 mx-auto animate-spin mb-2 text-primary" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+      </svg>Carregando...
+    </div>`;
+  try {
+    const data = await apiFetch('/api/dispatches');
+    renderHistory(data.dispatches);
+  } catch(e) {
+    document.getElementById('history-list').innerHTML = `<p class="text-red-400 text-sm py-6 text-center">Erro: ${esc(e.message)}</p>`;
+  }
+}
+
+function renderHistory(dispatches) {
+  const container = document.getElementById('history-list');
+  if (!dispatches.length) {
+    container.innerHTML = `
+      <div class="py-16 text-center text-slate-500">
+        <svg class="w-12 h-12 mx-auto mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
+        <p>Nenhum disparo encontrado.</p>
+      </div>`;
+    return;
+  }
+
+  container.innerHTML = dispatches.map(d => {
+    const statusColor = {
+      running: 'text-yellow-400 bg-yellow-400/10 border-yellow-400/30',
+      completed: 'text-green-400 bg-green-400/10 border-green-400/30',
+      error: 'text-red-400 bg-red-400/10 border-red-400/30',
+    }[d.status] || 'text-slate-400 bg-slate-400/10 border-slate-400/30';
+
+    const statusLabel = { running: 'Em andamento', completed: 'Concluído', error: 'Erro' }[d.status] || d.status;
+    const sourceLabel = d.source_type === 'sheets' ? '📊 Google Sheets' : `📄 ${d.source_filename || 'CSV'}`;
+    const pct = d.total_contacts ? Math.round((d.sent_count / d.total_contacts) * 100) : 0;
+
+    return `
+    <div class="bg-sidebarBg rounded-xl border border-slate-700 p-5 hover:border-slate-600 transition-colors">
+      <div class="flex flex-wrap items-start justify-between gap-4">
+        <div class="space-y-1">
+          <div class="flex items-center gap-2">
+            <span class="text-xs border px-2 py-0.5 rounded-full font-semibold ${statusColor}">${statusLabel}</span>
+            <span class="text-xs text-slate-500">${sourceLabel}</span>
+          </div>
+          <p class="text-sm font-medium text-slate-200">${fmtDate(d.started_at)}</p>
+          ${d.finished_at ? `<p class="text-xs text-slate-500">Concluído em ${fmtDate(d.finished_at)}</p>` : ''}
+        </div>
+        <div class="flex items-center gap-6 text-center">
+          <div><p class="text-lg font-bold text-slate-200">${d.total_contacts}</p><p class="text-[10px] text-slate-500 uppercase">Total</p></div>
+          <div><p class="text-lg font-bold text-primary">${d.sent_count}</p><p class="text-[10px] text-slate-500 uppercase">Enviados</p></div>
+          <div><p class="text-lg font-bold ${d.error_count ? 'text-red-400' : 'text-slate-400'}">${d.error_count}</p><p class="text-[10px] text-slate-500 uppercase">Erros</p></div>
+          <div><p class="text-lg font-bold text-slate-200">${pct}%</p><p class="text-[10px] text-slate-500 uppercase">Taxa</p></div>
+        </div>
+      </div>
+      <div class="mt-4 flex items-center justify-between">
+        <div class="flex-1 bg-slate-800 rounded-full h-1.5 mr-4">
+          <div class="bg-primary h-1.5 rounded-full transition-all" style="width:${pct}%"></div>
+        </div>
+        <button onclick="openModal('${d.id}', '${fmtDate(d.started_at)}')" class="text-xs text-primary hover:underline shrink-0">
+          Ver logs →
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function openModal(dispatchId, title) {
+  document.getElementById('modal-title').textContent = 'Logs — ' + title;
+  document.getElementById('modal-logs-tbody').innerHTML = '<tr><td colspan="5" class="px-5 py-8 text-center text-slate-500 text-sm">Carregando...</td></tr>';
+  document.getElementById('logs-modal').classList.remove('hidden');
+  document.getElementById('modal-stats').textContent = '';
+  document.getElementById('modal-download').dataset.id = dispatchId;
+
+  try {
+    const data = await apiFetch(`/api/dispatches/${dispatchId}/logs`);
+    modalLogsData = data.logs;
+    const ok   = data.logs.filter(l => l.status === 'success').length;
+    const fail = data.logs.filter(l => l.status === 'error').length;
+    document.getElementById('modal-stats').textContent = `${data.logs.length} registros · ${ok} enviados · ${fail} erros`;
+
+    document.getElementById('modal-logs-tbody').innerHTML = data.logs.map(l => `
+      <tr class="${l.status === 'success' ? 'bg-primary/5' : 'bg-red-500/5'}">
+        <td class="px-5 py-2.5 text-slate-500 text-xs">${l.contact_index}</td>
+        <td class="px-5 py-2.5 text-sm font-medium">${esc(l.contact_name || '')}</td>
+        <td class="px-5 py-2.5 text-xs font-mono text-slate-400">${l.contact_phone || ''}</td>
+        <td class="px-5 py-2.5">${l.status === 'success'
+          ? '<span class="text-primary text-xs font-semibold">✓ Enviado</span>'
+          : `<span class="text-red-400 text-xs font-semibold">✗ Erro</span><br><span class="text-[10px] text-slate-500">${esc(l.error_message || '')}</span>`}</td>
+        <td class="px-5 py-2.5 text-xs text-slate-500 font-mono">${fmtDate(l.sent_at)}</td>
+      </tr>`).join('');
+  } catch(e) {
+    document.getElementById('modal-logs-tbody').innerHTML = `<tr><td colspan="5" class="px-5 py-8 text-center text-red-400 text-sm">Erro: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function closeModal() {
+  document.getElementById('logs-modal').classList.add('hidden');
+  modalLogsData = [];
+}
+
+function downloadModalLogs() {
+  if (!modalLogsData.length) return;
+  const rows = [['#','Nome','Telefone','Status','Erro','Horário']];
+  modalLogsData.forEach(l => rows.push([l.contact_index, l.contact_name, l.contact_phone, l.status, l.error_message || '', l.sent_at]));
+  const csv = rows.map(r => r.map(v => `"${String(v || '').replace(/"/g,'""')}"`).join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+  a.download = `disparo_${document.getElementById('modal-download').dataset.id.slice(0,8)}.csv`;
+  a.click();
+}
+
+// ================================================================
+// CONFIG
+// ================================================================
+async function loadConfig() {
+  try {
+    const data = await apiFetch('/api/credentials');
+    if (data.evolution_api_url) document.getElementById('cfg-api-url').value   = data.evolution_api_url;
+    if (data.evolution_api_key) document.getElementById('cfg-api-key').value   = data.evolution_api_key;
+    if (data.instance_name)     document.getElementById('cfg-instance').value  = data.instance_name;
+    if (data.has_google_credentials) document.getElementById('google-creds-badge').classList.remove('hidden');
+  } catch(e) { /* credentials may not exist yet */ }
+}
+
+async function saveConfig() {
+  const apiUrl  = document.getElementById('cfg-api-url').value.trim();
+  const apiKey  = document.getElementById('cfg-api-key').value.trim();
+  const inst    = document.getElementById('cfg-instance').value.trim();
+  const gcText  = document.getElementById('cfg-google-creds').value.trim();
+
+  if (!apiUrl || !apiKey || !inst) {
+    showConfigFeedback('error', 'Preencha URL, API Key e Instância.');
+    return;
+  }
+
+  let googleCredentials = null;
+  if (gcText) {
+    try { googleCredentials = JSON.parse(gcText); }
+    catch { showConfigFeedback('error', 'JSON das credenciais Google inválido.'); return; }
+  }
+
+  document.getElementById('save-spinner').classList.remove('hidden');
+  document.getElementById('save-btn').disabled = true;
+
+  try {
+    await apiFetch('/api/credentials', {
+      method: 'POST',
+      body: JSON.stringify({ evolution_api_url: apiUrl, evolution_api_key: apiKey, instance_name: inst, google_credentials: googleCredentials }),
+    });
+    showConfigFeedback('success', 'Configurações salvas com sucesso!');
+    document.getElementById('cfg-google-creds').value = '';
+    document.getElementById('google-creds-badge').classList.remove('hidden');
+  } catch(e) {
+    showConfigFeedback('error', 'Erro: ' + e.message);
+  } finally {
+    document.getElementById('save-spinner').classList.add('hidden');
+    document.getElementById('save-btn').disabled = false;
+  }
+}
+
+function showConfigFeedback(type, msg) {
+  const el = document.getElementById('config-feedback');
+  el.className = type === 'success'
+    ? 'p-4 rounded-lg bg-green-500/10 border border-green-500/30 text-green-400 text-sm'
+    : 'p-4 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm';
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  setTimeout(() => el.classList.add('hidden'), 4000);
+}
+
+// ================================================================
+// BOOT
+// ================================================================
+init();
+</script>
+</body>
+</html>
