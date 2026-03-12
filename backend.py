@@ -30,6 +30,7 @@ SUPABASE_SERVICE_KEY = os.getenv(
     "SUPABASE_SERVICE_KEY",
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF1Y2Rna211anF6aGdpbm9rZWd4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MzMyMzgwOCwiZXhwIjoyMDg4ODk5ODB9.VlbAvc2o2oOGsUTt7bQkkW93P8mQDHWJVdbveUfIA9s",
 )
+SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF1Y2Rna211anF6aGdpbm9rZWd4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMzMjM4MDgsImV4cCI6MjA4ODg5OTgwOH0.s5TJJadX45oxRj6_HZu-bKbdAsn_1QDo_YOy5kV0-ao"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
@@ -53,28 +54,42 @@ _dispatches: dict[str, dict] = {}
 # ================================================================
 # AUTH
 # ================================================================
+def _validate_token_sync(jwt_token: str) -> dict:
+    """Validates user JWT by calling Supabase Auth REST API directly."""
+    resp = requests.get(
+        f"{SUPABASE_URL}/auth/v1/user",
+        headers={
+            "Authorization": f"Bearer {jwt_token}",
+            "apikey": SUPABASE_ANON_KEY,
+        },
+        timeout=10,
+    )
+    if resp.status_code != 200:
+        raise ValueError(f"Token inválido (status {resp.status_code})")
+    return resp.json()
+
+
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     token: Optional[str] = Query(default=None),
 ) -> str:
-    jwt = None
+    jwt_token = None
     if credentials:
-        jwt = credentials.credentials
+        jwt_token = credentials.credentials
     elif token:
-        jwt = token
+        jwt_token = token
 
-    if not jwt:
+    if not jwt_token:
         raise HTTPException(status_code=401, detail="Token não fornecido.")
 
     try:
-        response = supabase.auth.get_user(jwt)
-        user = response.user
-        if not user:
-            raise HTTPException(status_code=401, detail="Token inválido.")
-        email = user.email or ""
+        loop = asyncio.get_event_loop()
+        user_data = await loop.run_in_executor(None, _validate_token_sync, jwt_token)
+        email = user_data.get("email", "")
+        user_id = user_data.get("id", "")
         if not email.endswith("@adapta.org"):
             raise HTTPException(status_code=403, detail="Acesso restrito a emails @adapta.org.")
-        return user.id
+        return user_id
     except HTTPException:
         raise
     except Exception as e:
