@@ -311,34 +311,40 @@ def index():
 
 @app.get("/api/credentials")
 def get_credentials(user_id: str = Depends(get_current_user)):
-    result = supabase.table("user_credentials").select("*").eq("user_id", user_id).execute()
-    if result.data:
-        cred = dict(result.data[0])
-        cred["has_google_credentials"] = bool(cred.get("google_credentials"))
-        cred.pop("google_credentials", None)
-        return cred
-    return {}
+    try:
+        result = supabase.table("user_credentials").select("*").eq("user_id", user_id).execute()
+        if result.data:
+            cred = dict(result.data[0])
+            cred["has_google_credentials"] = bool(cred.get("google_credentials"))
+            cred.pop("google_credentials", None)
+            return cred
+        return {}
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao buscar credenciais: {str(e)}")
 
 
 @app.post("/api/credentials")
 def save_credentials(req: CredentialsRequest, user_id: str = Depends(get_current_user)):
-    data = {
-        "user_id": user_id,
-        "evolution_api_url": req.evolution_api_url,
-        "evolution_api_key": req.evolution_api_key,
-        "instance_name": req.instance_name,
-        "updated_at": datetime.utcnow().isoformat(),
-    }
-    if req.google_credentials is not None:
-        data["google_credentials"] = req.google_credentials
+    try:
+        data = {
+            "user_id": user_id,
+            "evolution_api_url": req.evolution_api_url,
+            "evolution_api_key": req.evolution_api_key,
+            "instance_name": req.instance_name,
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        if req.google_credentials is not None:
+            data["google_credentials"] = req.google_credentials
 
-    existing = supabase.table("user_credentials").select("id").eq("user_id", user_id).execute()
-    if existing.data:
-        supabase.table("user_credentials").update(data).eq("user_id", user_id).execute()
-    else:
-        data["created_at"] = datetime.utcnow().isoformat()
-        supabase.table("user_credentials").insert(data).execute()
-    return {"status": "ok"}
+        existing = supabase.table("user_credentials").select("id").eq("user_id", user_id).execute()
+        if existing.data:
+            supabase.table("user_credentials").update(data).eq("user_id", user_id).execute()
+        else:
+            data["created_at"] = datetime.utcnow().isoformat() + "Z"
+            supabase.table("user_credentials").insert(data).execute()
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao salvar credenciais: {str(e)}")
 
 
 @app.post("/api/load")
