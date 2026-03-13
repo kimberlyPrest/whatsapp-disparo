@@ -14,13 +14,12 @@ from typing import AsyncGenerator, Optional
 import gspread
 import requests
 import uvicorn
-from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from google.oauth2.service_account import Credentials
 from pydantic import BaseModel
-from supabase import Client, create_client
 
 # ================================================================
 # SUPABASE CONFIG
@@ -32,10 +31,51 @@ SUPABASE_SERVICE_KEY = os.getenv(
 )
 SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF1Y2Rna211anF6aGdpbm9rZWd4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMzMjM4MDgsImV4cCI6MjA4ODg5OTgwOH0.s5TJJadX45oxRj6_HZu-bKbdAsn_1QDo_YOy5kV0-ao"
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
-
 COL_NAME = "Nome"
 COL_PHONE = "Telefone"
+
+# ================================================================
+# SUPABASE REST HELPERS (direct HTTP — avoids supabase-py header bugs)
+# ================================================================
+
+def _db_headers(prefer: str = "return=representation") -> dict:
+    return {
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": prefer,
+    }
+
+
+def _db_get(table: str, filters: dict = None, columns: str = "*", order: str = None) -> list:
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    params: dict = {"select": columns}
+    if filters:
+        for k, v in filters.items():
+            params[k] = f"eq.{v}"
+    if order:
+        params["order"] = order
+    resp = requests.get(url, headers=_db_headers(), params=params, timeout=15)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _db_insert(table: str, data) -> list:
+    """Insert one row (dict) or many rows (list of dicts). Returns list of inserted rows."""
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    resp = requests.post(url, headers=_db_headers(), json=data, timeout=15)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _db_patch(table: str, data: dict, filters: dict) -> None:
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    params = {k: f"eq.{v}" for k, v in filters.items()}
+    resp = requests.patch(
+        url, headers=_db_headers(prefer="return=minimal"), json=data, params=params, timeout=15
+    )
+    resp.raise_for_status()
+
 
 # ================================================================
 # APP
@@ -49,6 +89,9 @@ security = HTTPBearer(auto_error=False)
 
 # Per-user dispatch state: { user_id: { running, events, subscribers } }
 _dispatches: dict[str, dict] = {}
+
+# Shared HubSpot webhook contacts buffer (single pool, user division to be added later)
+_webhook_contacts: list = []
 
 
 # ================================================================
@@ -199,6 +242,60 @@ async def _broadcast(user_id: str, event: dict) -> None:
         await q.put(event)
 
 
+def _parse_hubspot_payload(payload) -> list[dict]:
+    """
+    Parse HubSpot webhook payload into [{name, first_name, phone}].
+    Handles both single object and list. Supports:
+      - Simple: {"nome": "...", "telefone": "..."}
+      - HubSpot native: {"properties": {"firstname": {"value":"..."}, "phone": {"value":"..."}}}
+      - HubSpot flat:   {"properties": {"firstname": "...", "phone": "..."}}
+    """
+    items = payload if isinstance(payload, list) else [payload]
+    contacts = []
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+
+        # Simple format: {"nome": "...", "telefone": "..."}
+        name = str(item.get("nome") or item.get("name") or "").strip()
+        phone = str(item.get("telefone") or item.get("phone") or "").strip()
+
+        # HubSpot properties format
+        if not name or not phone:
+            props = item.get("properties", {})
+            if isinstance(props, dict):
+                def _prop(key):
+                    v = props.get(key, "")
+                    if isinstance(v, dict):
+                        return str(v.get("value", "")).strip()
+                    return str(v or "").strip()
+
+                firstname = _prop("firstname")
+                lastname = _prop("lastname")
+                if firstname or lastname:
+                    name = f"{firstname} {lastname}".strip()
+
+                phone = (
+                    _prop("mobilephone")
+                    or _prop("phone")
+                    or _prop("telefone")
+                    or _prop("whatsapp")
+                )
+
+        name = name.strip()
+        phone = phone.strip()
+
+        if name and phone:
+            contacts.append({
+                "name": name,
+                "first_name": name.split()[0].capitalize(),
+                "phone": normalize_phone(phone),
+            })
+
+    return contacts
+
+
 # ================================================================
 # DISPATCH TASK
 # ================================================================
@@ -243,7 +340,7 @@ async def run_dispatch(
 
         if len(logs_batch) >= 50:
             try:
-                supabase.table("dispatch_logs").insert(logs_batch).execute()
+                _db_insert("dispatch_logs", logs_batch)
             except Exception:
                 pass
             logs_batch = []
@@ -280,19 +377,21 @@ async def run_dispatch(
 
     if logs_batch:
         try:
-            supabase.table("dispatch_logs").insert(logs_batch).execute()
+            _db_insert("dispatch_logs", logs_batch)
         except Exception:
             pass
 
     try:
-        supabase.table("dispatches").update(
+        _db_patch(
+            "dispatches",
             {
                 "status": "completed",
                 "sent_count": ok,
                 "error_count": fail,
-                "finished_at": datetime.utcnow().isoformat(),
-            }
-        ).eq("id", dispatch_id).execute()
+                "finished_at": datetime.utcnow().isoformat() + "Z",
+            },
+            {"id": dispatch_id},
+        )
     except Exception:
         pass
 
@@ -309,12 +408,42 @@ def index():
     return FileResponse("index.html")
 
 
+# ----------------------------------------------------------------
+# HUBSPOT WEBHOOK — public endpoint (no auth required, single shared pool)
+# URL: POST /api/webhook/hubspot
+# ----------------------------------------------------------------
+@app.post("/api/webhook/hubspot")
+async def hubspot_webhook(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Payload JSON inválido.")
+
+    new_contacts = _parse_hubspot_payload(body)
+    _webhook_contacts.extend(new_contacts)
+    return {"received": True, "parsed": len(new_contacts)}
+
+
+@app.get("/api/webhook-contacts")
+def get_webhook_contacts(_: str = Depends(get_current_user)):
+    return {"contacts": list(_webhook_contacts), "count": len(_webhook_contacts)}
+
+
+@app.delete("/api/webhook-contacts")
+def clear_webhook_contacts(_: str = Depends(get_current_user)):
+    _webhook_contacts.clear()
+    return {"status": "cleared"}
+
+
+# ----------------------------------------------------------------
+# CREDENTIALS
+# ----------------------------------------------------------------
 @app.get("/api/credentials")
 def get_credentials(user_id: str = Depends(get_current_user)):
     try:
-        result = supabase.table("user_credentials").select("*").eq("user_id", user_id).execute()
-        if result.data:
-            cred = dict(result.data[0])
+        rows = _db_get("user_credentials", filters={"user_id": user_id})
+        if rows:
+            cred = dict(rows[0])
             cred["has_google_credentials"] = bool(cred.get("google_credentials"))
             cred.pop("google_credentials", None)
             return cred
@@ -336,31 +465,29 @@ def save_credentials(req: CredentialsRequest, user_id: str = Depends(get_current
         if req.google_credentials is not None:
             data["google_credentials"] = req.google_credentials
 
-        existing = supabase.table("user_credentials").select("id").eq("user_id", user_id).execute()
-        if existing.data:
-            supabase.table("user_credentials").update(data).eq("user_id", user_id).execute()
+        existing = _db_get("user_credentials", filters={"user_id": user_id}, columns="id")
+        if existing:
+            _db_patch("user_credentials", data, {"user_id": user_id})
         else:
             data["created_at"] = datetime.utcnow().isoformat() + "Z"
-            supabase.table("user_credentials").insert(data).execute()
+            _db_insert("user_credentials", data)
         return {"status": "ok"}
     except Exception as e:
         raise HTTPException(500, f"Erro ao salvar credenciais: {str(e)}")
 
 
+# ----------------------------------------------------------------
+# CONTACTS
+# ----------------------------------------------------------------
 @app.post("/api/load")
 def load_contacts_route(body: dict, user_id: str = Depends(get_current_user)):
     sheet_url = body.get("sheet_url", "")
     if not sheet_url:
         raise HTTPException(400, "sheet_url obrigatório.")
-    cred_result = (
-        supabase.table("user_credentials")
-        .select("google_credentials")
-        .eq("user_id", user_id)
-        .execute()
-    )
-    if not cred_result.data or not cred_result.data[0].get("google_credentials"):
+    rows = _db_get("user_credentials", filters={"user_id": user_id}, columns="google_credentials")
+    if not rows or not rows[0].get("google_credentials"):
         raise HTTPException(400, "Configure as credenciais Google primeiro em Configuração.")
-    google_creds = cred_result.data[0]["google_credentials"]
+    google_creds = rows[0]["google_credentials"]
     try:
         contacts = load_from_sheet(sheet_url, google_creds)
         return {"contacts": contacts}
@@ -369,9 +496,7 @@ def load_contacts_route(body: dict, user_id: str = Depends(get_current_user)):
 
 
 @app.post("/api/upload-csv")
-async def upload_csv(
-    file: UploadFile = File(...), _: str = Depends(get_current_user)
-):
+async def upload_csv(file: UploadFile = File(...), _: str = Depends(get_current_user)):
     content = await file.read()
     try:
         contacts = parse_csv_contacts(content)
@@ -380,6 +505,9 @@ async def upload_csv(
         raise HTTPException(400, f"Erro ao processar CSV: {e}")
 
 
+# ----------------------------------------------------------------
+# DISPATCH
+# ----------------------------------------------------------------
 @app.post("/api/dispatch/start")
 async def start_dispatch(
     req: DispatchRequest,
@@ -390,12 +518,10 @@ async def start_dispatch(
     if state["running"]:
         raise HTTPException(409, "Disparo já em andamento.")
 
-    cred_result = (
-        supabase.table("user_credentials").select("*").eq("user_id", user_id).execute()
-    )
-    if not cred_result.data:
+    rows = _db_get("user_credentials", filters={"user_id": user_id})
+    if not rows:
         raise HTTPException(400, "Configure as credenciais primeiro em Configuração.")
-    cred = cred_result.data[0]
+    cred = rows[0]
     api_url = cred.get("evolution_api_url", "")
     api_key = cred.get("evolution_api_key", "")
     instance = cred.get("instance_name", "")
@@ -412,6 +538,10 @@ async def start_dispatch(
         contacts = load_from_sheet(req.sheet_url, google_creds)
     elif req.source_type == "csv" and req.contacts_json:
         contacts = json.loads(req.contacts_json)
+    elif req.source_type == "hubspot":
+        contacts = list(_webhook_contacts)
+        if not contacts:
+            raise HTTPException(400, "Nenhum contato recebido via webhook HubSpot.")
     else:
         raise HTTPException(400, "Fonte de contatos inválida.")
 
@@ -433,10 +563,10 @@ async def start_dispatch(
         "status": "running",
         "total_contacts": len(contacts),
         "lot_config": cfg,
-        "started_at": datetime.utcnow().isoformat(),
+        "started_at": datetime.utcnow().isoformat() + "Z",
     }
-    dispatch_result = supabase.table("dispatches").insert(dispatch_data).execute()
-    dispatch_id = dispatch_result.data[0]["id"]
+    inserted = _db_insert("dispatches", dispatch_data)
+    dispatch_id = inserted[0]["id"] if isinstance(inserted, list) else inserted["id"]
 
     state["running"] = True
     state["events"] = []
@@ -481,37 +611,22 @@ async def dispatch_stream(user_id: str = Depends(get_current_user)):
     )
 
 
+# ----------------------------------------------------------------
+# HISTORY
+# ----------------------------------------------------------------
 @app.get("/api/dispatches")
 def list_dispatches(user_id: str = Depends(get_current_user)):
-    result = (
-        supabase.table("dispatches")
-        .select("*")
-        .eq("user_id", user_id)
-        .order("created_at", desc=True)
-        .execute()
-    )
-    return {"dispatches": result.data}
+    rows = _db_get("dispatches", filters={"user_id": user_id}, order="created_at.desc")
+    return {"dispatches": rows}
 
 
 @app.get("/api/dispatches/{dispatch_id}/logs")
 def get_dispatch_logs(dispatch_id: str, user_id: str = Depends(get_current_user)):
-    dispatch = (
-        supabase.table("dispatches")
-        .select("id")
-        .eq("id", dispatch_id)
-        .eq("user_id", user_id)
-        .execute()
-    )
-    if not dispatch.data:
+    dispatch = _db_get("dispatches", filters={"id": dispatch_id, "user_id": user_id}, columns="id")
+    if not dispatch:
         raise HTTPException(404, "Disparo não encontrado.")
-    logs = (
-        supabase.table("dispatch_logs")
-        .select("*")
-        .eq("dispatch_id", dispatch_id)
-        .order("contact_index")
-        .execute()
-    )
-    return {"logs": logs.data}
+    logs = _db_get("dispatch_logs", filters={"dispatch_id": dispatch_id}, order="contact_index")
+    return {"logs": logs}
 
 
 if __name__ == "__main__":
