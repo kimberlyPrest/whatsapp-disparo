@@ -93,6 +93,9 @@ _dispatches: dict[str, dict] = {}
 # Shared HubSpot webhook contacts buffer (single pool, user division to be added later)
 _webhook_contacts: list = []
 
+# Raw payloads received from HubSpot (last 50) — for inspection/schema discovery
+_webhook_raw: list = []
+
 
 # ================================================================
 # AUTH
@@ -419,6 +422,12 @@ async def hubspot_webhook(request: Request):
     except Exception:
         raise HTTPException(400, "Payload JSON inválido.")
 
+    # Store raw payload for schema inspection (keep last 50)
+    items = body if isinstance(body, list) else [body]
+    _webhook_raw.extend(items)
+    if len(_webhook_raw) > 50:
+        del _webhook_raw[:-50]
+
     new_contacts = _parse_hubspot_payload(body)
     _webhook_contacts.extend(new_contacts)
     return {"received": True, "parsed": len(new_contacts)}
@@ -433,6 +442,21 @@ def get_webhook_contacts(_: str = Depends(get_current_user)):
 def clear_webhook_contacts(_: str = Depends(get_current_user)):
     _webhook_contacts.clear()
     return {"status": "cleared"}
+
+
+@app.get("/api/webhook/hubspot/raw")
+def get_webhook_raw(_: str = Depends(get_current_user)):
+    """Returns raw HubSpot payloads for schema inspection."""
+    all_keys: dict = {}
+    for item in _webhook_raw:
+        for k, v in item.items():
+            if k not in all_keys:
+                all_keys[k] = type(v).__name__
+    return {
+        "count": len(_webhook_raw),
+        "all_keys_seen": all_keys,
+        "samples": _webhook_raw[-3:],  # last 3 payloads
+    }
 
 
 # ----------------------------------------------------------------
