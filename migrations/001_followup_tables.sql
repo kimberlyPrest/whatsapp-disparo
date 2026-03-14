@@ -44,17 +44,16 @@ CREATE TABLE IF NOT EXISTS owner_mapping (
   created_at          TIMESTAMPTZ DEFAULT now()
 );
 
--- Inserir os 7 mapeamentos iniciais
--- ATENÇÃO: substitua pelos IDs reais do HubSpot (veja no campo hubspot_owner_id do payload)
--- Exemplo: Kimberly tem ID 81963654 conforme payload inspecionado
+-- Inserir os 8 mapeamentos de proprietários HubSpot
 INSERT INTO owner_mapping (hubspot_owner_id, adapta_email) VALUES
-  ('81963654',  'kimberly@adapta.org'),   -- Kimberly Prestes (ID confirmado no payload)
-  ('ID_2',      'usuario2@adapta.org'),   -- substitua pelo ID real
-  ('ID_3',      'usuario3@adapta.org'),
-  ('ID_4',      'usuario4@adapta.org'),
-  ('ID_5',      'usuario5@adapta.org'),
-  ('ID_6',      'usuario6@adapta.org'),
-  ('ID_7',      'usuario7@adapta.org')
+  ('76515710',  'felipe.garcia@adapta.org'),   -- Felipe Oliveira Garcia
+  ('75898140',  'lucas.dias@adapta.org'),       -- Lucas Dias
+  ('81963654',  'kimberly@adapta.org'),         -- Kimberly Prestes
+  ('85269149',  'navaar@adapta.org'),           -- Felipe Navaar
+  ('81609770',  'lucas.machado@adapta.org'),    -- Lucas Machado
+  ('83700998',  'lucas.silva@adapta.org'),      -- Lucas Silva
+  ('83126445',  'victor.borrajo@adapta.org'),   -- Victor Borrajo (sem acesso ao sistema)
+  ('79190496',  'vinicius@adapta.org')          -- Vinicius Galetti
 ON CONFLICT DO NOTHING;
 
 
