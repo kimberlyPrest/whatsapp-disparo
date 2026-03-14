@@ -160,6 +160,17 @@ scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
 async def startup_event():
     scheduler.add_job(check_scheduled_dispatches, "interval", minutes=1, id="check_scheduled")
     scheduler.start()
+    # Limpa dispatches que ficaram travados em "running" de um processo anterior
+    try:
+        stale = _db_get("dispatches", raw_params={"status": "eq.running"}, columns="id")
+        for row in stale:
+            _db_patch(
+                "dispatches",
+                {"status": "interrupted", "finished_at": datetime.utcnow().isoformat() + "Z"},
+                {"id": row["id"]},
+            )
+    except Exception:
+        pass
 
 
 @app.on_event("shutdown")
@@ -532,6 +543,7 @@ async def run_dispatch(
     api_url: str,
     api_key: str,
     instance: str,
+    render_fn=None,  # opcional: sobrescreve render_msg(template, contact)
 ) -> None:
     total = len(contacts)
     ok = fail = 0
@@ -539,7 +551,7 @@ async def run_dispatch(
     logs_batch = []
 
     for i, contact in enumerate(contacts, 1):
-        msg = render_msg(template, contact)
+        msg = render_fn(contact) if render_fn else render_msg(template, contact)
         try:
             await loop.run_in_executor(
                 None, _send_sync, contact["phone"], msg, api_url, api_key, instance
@@ -1228,89 +1240,22 @@ async def postcall_dispatch(
     inserted = _db_insert("dispatches", dispatch_data)
     dispatch_id = inserted[0]["id"] if isinstance(inserted, list) else inserted["id"]
 
-    # Pré-renderiza mensagens com URL CSAT por contato
-    contacts_rendered = []
-    for c in contacts:
-        contacts_rendered.append({
-            **c,
-            "_rendered_msg": _render_postcall_msg(req.template, c),
-        })
+    # Pré-renderiza as mensagens CSAT por contato e injeta via render_fn
+    contacts_rendered = [
+        {**c, "_rendered_msg": _render_postcall_msg(req.template, c)}
+        for c in contacts
+    ]
 
     state["running"] = True
     state["events"] = []
 
-    # Usa engine existente mas sobrescreve render_msg para usar _rendered_msg
-    async def run_postcall():
-        total = len(contacts_rendered)
-        ok = fail = 0
-        loop = asyncio.get_event_loop()
-        logs_batch = []
-
-        for i, contact in enumerate(contacts_rendered, 1):
-            msg = contact["_rendered_msg"]
-            try:
-                await loop.run_in_executor(
-                    None, _send_sync, contact["phone"], msg,
-                    cred["evolution_api_url"], cred["evolution_api_key"], cred["instance_name"],
-                )
-                status, err = "success", ""
-                ok += 1
-            except Exception as e:
-                status = "error"
-                err = str(e)[:120]
-                fail += 1
-
-            logs_batch.append({
-                "dispatch_id": dispatch_id,
-                "contact_index": i,
-                "contact_name": contact["name"],
-                "contact_phone": contact["phone"],
-                "status": status,
-                "error_message": err or None,
-            })
-
-            if len(logs_batch) >= 50:
-                try:
-                    _db_insert("dispatch_logs", logs_batch)
-                except Exception:
-                    pass
-                logs_batch = []
-
-            await _broadcast(user_id, {
-                "type": "sent", "index": i, "total": total,
-                "name": contact["name"], "phone": contact["phone"],
-                "first": contact["first_name"], "status": status, "error": err,
-                "ok": ok, "fail": fail,
-            })
-
-            if i < total:
-                pause_secs, pause_reason = get_pause(i, cfg)
-                for remaining in range(int(pause_secs), 0, -1):
-                    await _broadcast(user_id, {
-                        "type": "pause", "seconds": remaining,
-                        "total_pause": int(pause_secs), "reason": pause_reason,
-                    })
-                    await asyncio.sleep(1)
-
-        if logs_batch:
-            try:
-                _db_insert("dispatch_logs", logs_batch)
-            except Exception:
-                pass
-
-        try:
-            _db_patch("dispatches", {
-                "status": "completed", "sent_count": ok, "error_count": fail,
-                "finished_at": datetime.utcnow().isoformat() + "Z",
-            }, {"id": dispatch_id})
-        except Exception:
-            pass
-
-        state = get_user_state(user_id)
-        state["running"] = False
-        await _broadcast(user_id, {"type": "done", "ok": ok, "fail": fail})
-
-    background_tasks.add_task(run_postcall)
+    background_tasks.add_task(
+        run_dispatch,
+        user_id, dispatch_id, contacts_rendered, "",
+        cfg,
+        cred["evolution_api_url"], cred["evolution_api_key"], cred["instance_name"],
+        render_fn=lambda c: c["_rendered_msg"],
+    )
     return {"status": "started", "total": len(contacts), "dispatch_id": dispatch_id}
 
 
