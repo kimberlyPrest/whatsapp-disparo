@@ -40,20 +40,21 @@ CREATE TABLE IF NOT EXISTS owner_mapping (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   hubspot_owner_id    TEXT NOT NULL UNIQUE,  -- ID numérico do proprietário no HubSpot
   adapta_email        TEXT NOT NULL,
+  nome                TEXT,                  -- nome completo para pré-preencher o cadastro
   adapta_user_id      UUID,                  -- preenchido automaticamente na primeira query
   created_at          TIMESTAMPTZ DEFAULT now()
 );
 
 -- Inserir os 8 mapeamentos de proprietários HubSpot
-INSERT INTO owner_mapping (hubspot_owner_id, adapta_email) VALUES
-  ('76515710',  'felipe.garcia@adapta.org'),   -- Felipe Oliveira Garcia
-  ('75898140',  'lucas.dias@adapta.org'),       -- Lucas Dias
-  ('81963654',  'kimberly@adapta.org'),         -- Kimberly Prestes
-  ('85269149',  'navaar@adapta.org'),           -- Felipe Navaar
-  ('81609770',  'lucas.machado@adapta.org'),    -- Lucas Machado
-  ('83700998',  'lucas.silva@adapta.org'),      -- Lucas Silva
-  ('83126445',  'victor.borrajo@adapta.org'),   -- Victor Borrajo (sem acesso ao sistema)
-  ('79190496',  'vinicius@adapta.org')          -- Vinicius Galetti
+INSERT INTO owner_mapping (hubspot_owner_id, adapta_email, nome) VALUES
+  ('76515710',  'felipe.garcia@adapta.org',  'Felipe Oliveira Garcia'),
+  ('75898140',  'lucas.dias@adapta.org',     'Lucas Dias'),
+  ('81963654',  'kimberly@adapta.org',       'Kimberly Prestes'),
+  ('85269149',  'navaar@adapta.org',         'Felipe Navaar'),
+  ('81609770',  'lucas.machado@adapta.org',  'Lucas Machado'),
+  ('83700998',  'lucas.silva@adapta.org',    'Lucas Silva'),
+  ('83126445',  'victor.borrajo@adapta.org', 'Victor Borrajo'),
+  ('79190496',  'vinicius@adapta.org',       'Vinicius Galetti')
 ON CONFLICT DO NOTHING;
 
 

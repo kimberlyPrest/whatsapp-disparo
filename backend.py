@@ -848,9 +848,25 @@ def get_dispatch_logs(dispatch_id: str, user_id: str = Depends(get_current_user)
 # OWNER MAPPING (Feature 1 — Fase 3)
 # ================================================================
 
+@app.get("/api/owner-name")
+def get_owner_name(email: str):
+    """Retorna o nome do proprietário pelo email. Público — usado no formulário de cadastro."""
+    if not email:
+        return {"nome": None}
+    try:
+        rows = _db_get(
+            "owner_mapping",
+            raw_params={"adapta_email": f"eq.{email.lower()}"},
+            columns="nome",
+        )
+        return {"nome": rows[0]["nome"] if rows else None}
+    except Exception:
+        return {"nome": None}
+
+
 @app.get("/api/owner-mapping")
 def list_owner_mapping(_: str = Depends(get_current_user)):
-    rows = _db_get("owner_mapping", order="hubspot_owner_name")
+    rows = _db_get("owner_mapping", order="adapta_email")
     return {"mappings": rows}
 
 
