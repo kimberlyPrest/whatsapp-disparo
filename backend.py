@@ -4,6 +4,8 @@ WhatsApp Bulk Sender — FastAPI Backend (Multi-tenant + Supabase)
 
 import asyncio
 import csv
+import hashlib
+import hmac
 import io
 import json
 import os
@@ -25,12 +27,12 @@ from pydantic import BaseModel
 # ================================================================
 # SUPABASE CONFIG
 # ================================================================
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://aucdgkmujqzhginokegx.supabase.co")
-SUPABASE_SERVICE_KEY = os.getenv(
-    "SUPABASE_SERVICE_KEY",
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF1Y2Rna211anF6aGdpbm9rZWd4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MzMyMzgwOCwiZXhwIjoyMDg4ODk5ODB9.VlbAvc2o2oOGsUTt7bQkkW93P8mQDHWJVdbveUfIA9s",
-)
-SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF1Y2Rna211anF6aGdpbm9rZWd4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMzMjM4MDgsImV4cCI6MjA4ODg5OTgwOH0.s5TJJadX45oxRj6_HZu-bKbdAsn_1QDo_YOy5kV0-ao"
+SUPABASE_URL        = os.environ["SUPABASE_URL"]
+SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
+SUPABASE_ANON_KEY   = os.environ["SUPABASE_ANON_KEY"]
+
+# HubSpot webhook secret (opcional — se definido, verifica assinatura HMAC)
+HUBSPOT_CLIENT_SECRET = os.getenv("HUBSPOT_CLIENT_SECRET")
 
 COL_NAME = "Nome"
 COL_PHONE = "Telefone"
@@ -105,8 +107,17 @@ def _db_patch(table: str, data: dict, filters: dict) -> None:
 # APP
 # ================================================================
 app = FastAPI(title="WhatsApp Bulk Sender")
+
+# CORS: como o frontend é servido pelo mesmo servidor FastAPI, todas as chamadas
+# do browser são same-origin e não precisam de CORS.
+# ALLOWED_ORIGINS é usado apenas se houver necessidade de cross-origin (ex: dev local).
+_raw_origins = os.getenv("ALLOWED_ORIGINS", os.getenv("RENDER_EXTERNAL_URL", ""))
+_cors_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 security = HTTPBearer(auto_error=False)
@@ -608,8 +619,20 @@ def index():
 # ----------------------------------------------------------------
 @app.post("/api/webhook/hubspot")
 async def hubspot_webhook(request: Request):
+    raw_body = await request.body()
+
+    # Verificação de assinatura HMAC (HubSpot v1)
+    # Ativa apenas quando HUBSPOT_CLIENT_SECRET está configurado
+    if HUBSPOT_CLIENT_SECRET:
+        sig = request.headers.get("X-HubSpot-Signature", "")
+        expected = hashlib.sha256(
+            (HUBSPOT_CLIENT_SECRET + raw_body.decode("utf-8")).encode()
+        ).hexdigest()
+        if not hmac.compare_digest(expected, sig):
+            raise HTTPException(401, "Assinatura do webhook inválida.")
+
     try:
-        body = await request.json()
+        body = json.loads(raw_body)
     except Exception:
         raise HTTPException(400, "Payload JSON inválido.")
 
