@@ -111,7 +111,7 @@
           <label class="block text-sm font-medium text-slate-300 mb-1.5">Email</label>
           <input id="signup-email" type="email" placeholder="seu@adapta.org"
             class="w-full bg-darkBg border border-slate-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-primary text-slate-200 placeholder-slate-600"
-            oninput="onSignupEmailInput(this.value)"
+            onblur="onSignupEmailBlur(this.value)"
             onkeydown="if(event.key==='Enter') signup()"/>
         </div>
         <div id="signup-name-wrap" class="hidden">
@@ -887,23 +887,20 @@ function switchAuthTab(tab) {
 // ================================================================
 // AUTH
 // ================================================================
-let _signupEmailTimer = null;
-function onSignupEmailInput(value) {
-  clearTimeout(_signupEmailTimer);
+async function onSignupEmailBlur(value) {
   const wrap = document.getElementById('signup-name-wrap');
   if (!value.endsWith('@adapta.org')) { wrap.classList.add('hidden'); return; }
-  _signupEmailTimer = setTimeout(async () => {
-    try {
-      const res = await fetch(`/api/owner-name?email=${encodeURIComponent(value)}`);
-      const { nome } = await res.json();
-      const nameInput = document.getElementById('signup-name');
-      if (nome) { nameInput.value = nome; }
-      wrap.classList.remove('hidden');
-      nameInput.focus();
-    } catch (_) {
-      wrap.classList.remove('hidden');
-    }
-  }, 400);
+  try {
+    const res = await fetch(`/api/owner-name?email=${encodeURIComponent(value)}`);
+    const { nome } = await res.json();
+    const nameInput = document.getElementById('signup-name');
+    nameInput.value = nome || '';
+    wrap.classList.remove('hidden');
+    nameInput.focus();
+  } catch (_) {
+    document.getElementById('signup-name').value = '';
+    wrap.classList.remove('hidden');
+  }
 }
 
 async function login() {
