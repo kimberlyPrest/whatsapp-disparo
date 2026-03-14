@@ -219,7 +219,7 @@ class CredentialsRequest(BaseModel):
 
 
 class OwnerMappingRequest(BaseModel):
-    hubspot_owner_name: str
+    hubspot_owner_id: str   # ID numérico do proprietário no HubSpot (ex: "81963654")
     adapta_email: str
 
 
@@ -321,17 +321,27 @@ async def _broadcast(user_id: str, event: dict) -> None:
         await q.put(event)
 
 
+def _unix_ms_to_iso(value) -> Optional[str]:
+    """Converte timestamp Unix em milissegundos para ISO 8601. Retorna None se inválido."""
+    if not value:
+        return None
+    try:
+        return datetime.utcfromtimestamp(int(value) / 1000).isoformat() + "Z"
+    except Exception:
+        return None
+
+
 def _parse_hubspot_payload(payload) -> list[dict]:
     """
-    Parse HubSpot webhook payload into contacts with full properties.
-    Handles both single object and list. Supports:
-      - Simple: {"nome": "...", "telefone": "..."}
-      - HubSpot native: {"properties": {"firstname": {"value":"..."}, ...}}
-      - HubSpot flat:   {"properties": {"firstname": "...", ...}}
+    Parse HubSpot webhook payload (formato flat confirmado via /raw).
 
-    NOTA (Fase 0): Os field names abaixo são estimativas baseadas na API do HubSpot.
-    Após inspecionar /api/webhook/hubspot/raw com um payload real, ajuste os nomes
-    nas variáveis de campo marcadas com # FIELD_NAME.
+    Campos confirmados no payload:
+      nome, email, phone (int), data_1a_call (unix ms),
+      hubspot_owner_id (int), csat_labs_enviado, csat_scale_enviado,
+      comentario_csat_primeira_reuniao
+
+    Campos a adicionar futuramente (quando o HubSpot enviar):
+      produto, etapa_negocio, data_2a_call, data_3a_call, numero_consultoria
     """
     items = payload if isinstance(payload, list) else [payload]
     contacts = []
@@ -340,82 +350,68 @@ def _parse_hubspot_payload(payload) -> list[dict]:
         if not isinstance(item, dict):
             continue
 
-        props = item.get("properties", {})
-
-        def _prop(key):
-            """Extrai valor de props independente do formato (flat ou nested)."""
-            v = props.get(key, "") if props else ""
-            if isinstance(v, dict):
-                return str(v.get("value", "")).strip()
-            return str(v or "").strip()
+        # — Campos flat (sem wrapper properties) —
+        def _field(key):
+            v = item.get(key)
+            if v is None:
+                return None
+            return str(v).strip() if str(v).strip() else None
 
         # — Nome —
-        name = str(item.get("nome") or item.get("name") or "").strip()
+        name = _field("nome") or _field("name") or _field("firstname") or ""
         if not name:
-            firstname = _prop("firstname")                      # FIELD_NAME
-            lastname = _prop("lastname")                        # FIELD_NAME
-            name = f"{firstname} {lastname}".strip()
-
-        # — Telefone —
-        phone = str(item.get("telefone") or item.get("phone") or "").strip()
-        if not phone:
-            phone = (
-                _prop("mobilephone")                            # FIELD_NAME
-                or _prop("phone")                               # FIELD_NAME
-                or _prop("telefone")                            # FIELD_NAME
-                or _prop("whatsapp")                            # FIELD_NAME
-            )
-
-        name = name.strip()
-        phone = phone.strip()
-
-        if not name or not phone:
             continue
 
-        # — Campos novos —
-        email = _prop("email")                                  # FIELD_NAME
-        etapa_negocio = _prop("dealstage") or _prop("etapa_negocio")    # FIELD_NAME
-        produto = _prop("produto") or _prop("product_line")     # FIELD_NAME
-        numero_consultoria = _prop("numero_consultoria") or _prop("hs_object_id")  # FIELD_NAME
-        owner_name = _prop("hubspot_owner_name") or _prop("owner_name")            # FIELD_NAME
+        # — Telefone (pode vir como int ou str) —
+        phone_raw = item.get("phone") or item.get("telefone") or item.get("mobilephone") or ""
+        phone = str(phone_raw).strip() if phone_raw else ""
+        if not phone:
+            continue
 
-        # — Datas de reunião —
-        data_reuniao_1 = _prop("data_reuniao_1") or _prop("hs_meeting_1_date") or None  # FIELD_NAME
-        data_reuniao_2 = _prop("data_reuniao_2") or _prop("hs_meeting_2_date") or None  # FIELD_NAME
-        data_reuniao_3 = _prop("data_reuniao_3") or _prop("hs_meeting_3_date") or None  # FIELD_NAME
+        # — Owner ID (inteiro, não nome) —
+        owner_id = item.get("hubspot_owner_id")
+        owner_id_str = str(int(owner_id)) if owner_id is not None else None
+
+        # — Datas (Unix ms → ISO) —
+        data_reuniao_1 = _unix_ms_to_iso(item.get("data_1a_call"))
+        data_reuniao_2 = _unix_ms_to_iso(item.get("data_2a_call"))    # campo futuro
+        data_reuniao_3 = _unix_ms_to_iso(item.get("data_3a_call"))    # campo futuro
+
+        # — Campos a adicionar futuramente —
+        etapa_negocio    = _field("etapa_negocio") or _field("dealstage")
+        produto          = _field("produto") or _field("product_line")
+        numero_consultoria = _field("numero_consultoria") or _field("hs_object_id")
+        data_etapa_atual = _unix_ms_to_iso(item.get("data_etapa_atual"))
 
         # — CSATs —
-        csat_reuniao_1 = _prop("csat_reuniao_1") or None        # FIELD_NAME
-        csat_reuniao_2 = _prop("csat_reuniao_2") or None        # FIELD_NAME
-        csat_reuniao_3 = _prop("csat_reuniao_3") or None        # FIELD_NAME
+        csat_reuniao_1 = _field("csat_labs_enviado") or _field("csat_scale_enviado") or _field("csat_reuniao_1")
+        csat_reuniao_2 = _field("csat_reuniao_2")
+        csat_reuniao_3 = _field("comentario_csat_primeira_reuniao")
 
-        # — Data de entrada na etapa atual —
-        data_etapa_atual = _prop("hs_stage_probabilities_start_date") or _prop("data_etapa_atual") or None  # FIELD_NAME
-
-        # — HubSpot ID do deal/contato —
-        hubspot_id = (
-            str(item.get("id") or item.get("hs_object_id") or "").strip()
-            or _prop("hs_object_id")
-        ) or None
+        # — HubSpot ID do contato/deal (usa email como fallback único) —
+        hubspot_id = _field("hs_object_id") or _field("id")
+        # Se não tem hs_object_id, usa email como identificador único
+        if not hubspot_id and item.get("email"):
+            hubspot_id = f"email:{item['email']}"
 
         contacts.append({
-            # campos para disparo (compatibilidade com engine existente)
+            # campos para engine de disparo (compatibilidade existente)
             "name": name,
             "first_name": name.split()[0].capitalize(),
             "phone": normalize_phone(phone),
             # campos novos
-            "email": email or None,
-            "etapa_negocio": etapa_negocio or None,
-            "produto": produto or None,
-            "numero_consultoria": numero_consultoria or None,
-            "owner_name": owner_name or None,
-            "data_reuniao_1": data_reuniao_1 or None,
-            "data_reuniao_2": data_reuniao_2 or None,
-            "data_reuniao_3": data_reuniao_3 or None,
+            "email": _field("email"),
+            "etapa_negocio": etapa_negocio,
+            "produto": produto,
+            "numero_consultoria": numero_consultoria,
+            "owner_id": owner_id_str,
+            "data_reuniao_1": data_reuniao_1,
+            "data_reuniao_2": data_reuniao_2,
+            "data_reuniao_3": data_reuniao_3,
             "csat_reuniao_1": csat_reuniao_1,
             "csat_reuniao_2": csat_reuniao_2,
             "csat_reuniao_3": csat_reuniao_3,
-            "data_etapa_atual": data_etapa_atual or None,
+            "data_etapa_atual": data_etapa_atual,
             "hubspot_id": hubspot_id,
             "raw_payload": item,
         })
@@ -423,14 +419,14 @@ def _parse_hubspot_payload(payload) -> list[dict]:
     return contacts
 
 
-def _resolve_owner_user_id(owner_name: str) -> Optional[str]:
-    """Retorna o adapta_user_id para o nome do proprietário HubSpot, ou None."""
-    if not owner_name:
+def _resolve_owner_user_id(owner_id: str) -> Optional[str]:
+    """Retorna o adapta_user_id para o hubspot_owner_id (inteiro como string), ou None."""
+    if not owner_id:
         return None
     try:
         rows = _db_get(
             "owner_mapping",
-            raw_params={"hubspot_owner_name": f"ilike.{owner_name}"},
+            raw_params={"hubspot_owner_id": f"eq.{owner_id}"},
             columns="adapta_user_id,adapta_email",
         )
         if not rows:
@@ -439,14 +435,14 @@ def _resolve_owner_user_id(owner_name: str) -> Optional[str]:
         # Se user_id ainda não foi resolvido, busca pelo email e salva
         if not row.get("adapta_user_id") and row.get("adapta_email"):
             auth_rows = _db_get(
-                "users",
+                "auth_users_view",
                 raw_params={"email": f"eq.{row['adapta_email']}"},
                 columns="id",
             )
             if auth_rows:
                 uid = auth_rows[0]["id"]
                 _db_patch("owner_mapping", {"adapta_user_id": uid},
-                          {"adapta_email": row["adapta_email"]})
+                          {"hubspot_owner_id": owner_id})
                 return uid
         return row.get("adapta_user_id")
     except Exception:
@@ -458,7 +454,7 @@ def _upsert_hubspot_contact(contact: dict) -> None:
     if not contact.get("hubspot_id"):
         return
     try:
-        user_id = _resolve_owner_user_id(contact.get("owner_name"))
+        user_id = _resolve_owner_user_id(contact.get("owner_id"))
         row = {
             "hubspot_id": contact["hubspot_id"],
             "user_id": user_id,
@@ -862,7 +858,7 @@ def list_owner_mapping(_: str = Depends(get_current_user)):
 def create_owner_mapping(req: OwnerMappingRequest, _: str = Depends(get_current_user)):
     try:
         inserted = _db_insert("owner_mapping", {
-            "hubspot_owner_name": req.hubspot_owner_name,
+            "hubspot_owner_id": req.hubspot_owner_id,
             "adapta_email": req.adapta_email,
         })
         return {"status": "ok", "mapping": inserted[0] if inserted else {}}

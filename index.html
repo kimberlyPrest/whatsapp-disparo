@@ -794,9 +794,10 @@
   <div class="bg-sidebarBg rounded-2xl border border-slate-700 shadow-2xl w-full max-w-md space-y-4 p-6">
     <h3 class="font-bold text-base">Novo Mapeamento</h3>
     <div>
-      <label class="block text-sm font-medium text-slate-300 mb-1.5">Nome no HubSpot</label>
-      <input id="mapping-owner-name" type="text" placeholder="Ex: Kimberly Prestes"
+      <label class="block text-sm font-medium text-slate-300 mb-1.5">ID do Proprietário no HubSpot</label>
+      <input id="mapping-owner-id" type="text" placeholder="Ex: 81963654"
         class="w-full bg-darkBg border border-slate-700 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-primary text-slate-200"/>
+      <p class="text-[11px] text-slate-600 mt-1">Veja no campo <code class="text-slate-400">hubspot_owner_id</code> do payload.</p>
     </div>
     <div>
       <label class="block text-sm font-medium text-slate-300 mb-1.5">Email no sistema</label>
@@ -1777,7 +1778,7 @@ async function loadOwnerMapping() {
     container.innerHTML = mappings.map(m => `
       <div class="flex items-center justify-between bg-darkBg/50 rounded-lg px-4 py-2.5 border border-slate-700/60">
         <div class="text-sm">
-          <span class="text-slate-200 font-medium">${m.hubspot_owner_name}</span>
+          <span class="text-slate-200 font-medium">ID: ${m.hubspot_owner_id}</span>
           <span class="text-slate-500 mx-2">→</span>
           <span class="text-slate-400">${m.adapta_email}</span>
         </div>
@@ -1792,7 +1793,7 @@ async function loadOwnerMapping() {
 }
 
 function openAddMappingModal() {
-  document.getElementById('mapping-owner-name').value = '';
+  document.getElementById('mapping-owner-id').value = '';
   document.getElementById('mapping-email').value = '';
   document.getElementById('mapping-feedback').classList.add('hidden');
   document.getElementById('modal-add-mapping').classList.remove('hidden');
@@ -1803,12 +1804,13 @@ function closeAddMappingModal() {
 }
 
 async function saveOwnerMapping() {
-  const name  = document.getElementById('mapping-owner-name').value.trim();
-  const email = document.getElementById('mapping-email').value.trim();
-  if (!name || !email) { showFeedback('mapping-feedback', 'error', 'Preencha os dois campos.'); return; }
+  const ownerId = document.getElementById('mapping-owner-id').value.trim();
+  const email   = document.getElementById('mapping-email').value.trim();
+  if (!ownerId || !email) { showFeedback('mapping-feedback', 'error', 'Preencha os dois campos.'); return; }
+  if (!/^\d+$/.test(ownerId)) { showFeedback('mapping-feedback', 'error', 'O ID deve ser numérico.'); return; }
 
   try {
-    await apiFetch('/api/owner-mapping', { method: 'POST', body: JSON.stringify({ hubspot_owner_name: name, adapta_email: email }) });
+    await apiFetch('/api/owner-mapping', { method: 'POST', body: JSON.stringify({ hubspot_owner_id: ownerId, adapta_email: email }) });
     closeAddMappingModal();
     loadOwnerMapping();
   } catch(e) {

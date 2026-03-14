@@ -34,27 +34,35 @@ CREATE INDEX IF NOT EXISTS idx_hubspot_contacts_produto ON hubspot_contacts(prod
 CREATE INDEX IF NOT EXISTS idx_hubspot_contacts_data_etapa ON hubspot_contacts(data_etapa_atual);
 
 
--- Mapeamento: nome do proprietário no HubSpot → usuário do sistema
+-- Mapeamento: hubspot_owner_id (inteiro) → usuário do sistema
+-- O hubspot_owner_id vem do campo "hubspot_owner_id" no payload do webhook
 CREATE TABLE IF NOT EXISTS owner_mapping (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  hubspot_owner_name  TEXT NOT NULL,
+  hubspot_owner_id    TEXT NOT NULL UNIQUE,  -- ID numérico do proprietário no HubSpot
   adapta_email        TEXT NOT NULL,
-  adapta_user_id      UUID,         -- preenchido automaticamente na primeira query
+  adapta_user_id      UUID,                  -- preenchido automaticamente na primeira query
   created_at          TIMESTAMPTZ DEFAULT now()
 );
 
 -- Inserir os 7 mapeamentos iniciais
--- ATENÇÃO: substitua pelos nomes exatos como aparecem no HubSpot
-INSERT INTO owner_mapping (hubspot_owner_name, adapta_email) VALUES
-  ('Kimberly Prestes',  'kimberly@adapta.org'),
-  ('Usuario 2',         'usuario2@adapta.org'),
-  ('Usuario 3',         'usuario3@adapta.org'),
-  ('Usuario 4',         'usuario4@adapta.org'),
-  ('Usuario 5',         'usuario5@adapta.org'),
-  ('Usuario 6',         'usuario6@adapta.org'),
-  ('Usuario 7',         'usuario7@adapta.org')
+-- ATENÇÃO: substitua pelos IDs reais do HubSpot (veja no campo hubspot_owner_id do payload)
+-- Exemplo: Kimberly tem ID 81963654 conforme payload inspecionado
+INSERT INTO owner_mapping (hubspot_owner_id, adapta_email) VALUES
+  ('81963654',  'kimberly@adapta.org'),   -- Kimberly Prestes (ID confirmado no payload)
+  ('ID_2',      'usuario2@adapta.org'),   -- substitua pelo ID real
+  ('ID_3',      'usuario3@adapta.org'),
+  ('ID_4',      'usuario4@adapta.org'),
+  ('ID_5',      'usuario5@adapta.org'),
+  ('ID_6',      'usuario6@adapta.org'),
+  ('ID_7',      'usuario7@adapta.org')
 ON CONFLICT DO NOTHING;
 
+
+-- View para lookup de usuários por email (auth.users não é acessível via REST direto)
+CREATE OR REPLACE VIEW auth_users_view AS
+  SELECT id, email FROM auth.users;
+
+GRANT SELECT ON auth_users_view TO service_role;
 
 -- Agendamentos de disparo
 CREATE TABLE IF NOT EXISTS scheduled_dispatches (
