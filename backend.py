@@ -165,32 +165,41 @@ def _validate_token_sync(jwt_token: str) -> dict:
     return resp.json()
 
 
-async def get_current_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    token: Optional[str] = Query(default=None),
-) -> str:
-    jwt_token = None
-    if credentials:
-        jwt_token = credentials.credentials
-    elif token:
-        jwt_token = token
-
+async def _resolve_jwt(
+    credentials: Optional[HTTPAuthorizationCredentials],
+    token: Optional[str],
+) -> dict:
+    jwt_token = credentials.credentials if credentials else token
     if not jwt_token:
         raise HTTPException(status_code=401, detail="Token não fornecido.")
-
     try:
         loop = asyncio.get_event_loop()
         user_data = await loop.run_in_executor(None, _validate_token_sync, jwt_token)
         email = user_data.get("email", "")
-        user_id = user_data.get("id", "")
         allowed = ("@adapta.org", "@copyexperts.com.br")
         if not any(email.endswith(d) for d in allowed):
             raise HTTPException(status_code=403, detail="Acesso restrito a emails corporativos.")
-        return user_id
+        return user_data
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Autenticação falhou: {str(e)}")
+
+
+async def get_current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    token: Optional[str] = Query(default=None),
+) -> str:
+    user_data = await _resolve_jwt(credentials, token)
+    return user_data.get("id", "")
+
+
+async def get_current_user_email(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    token: Optional[str] = Query(default=None),
+) -> str:
+    user_data = await _resolve_jwt(credentials, token)
+    return user_data.get("email", "")
 
 
 # ================================================================
@@ -848,6 +857,24 @@ def get_dispatch_logs(dispatch_id: str, user_id: str = Depends(get_current_user)
 # ================================================================
 # OWNER MAPPING (Feature 1 — Fase 3)
 # ================================================================
+
+def _get_user_role(email: str) -> str:
+    """Retorna 'superadmin', 'elite' ou 'geral' para o email informado."""
+    try:
+        rows = _db_get(
+            "owner_mapping",
+            raw_params={"adapta_email": f"eq.{email.lower()}"},
+            columns="role",
+        )
+        return rows[0]["role"] if rows else "geral"
+    except Exception:
+        return "geral"
+
+
+@app.get("/api/me/role")
+async def get_my_role(email: str = Depends(get_current_user_email)):
+    return {"role": _get_user_role(email)}
+
 
 @app.get("/api/owner-name")
 def get_owner_name(email: str):

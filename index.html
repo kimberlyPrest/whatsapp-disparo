@@ -587,8 +587,8 @@
 
       <div id="config-feedback" class="hidden"></div>
 
-      <!-- Owner Mapping -->
-      <div class="bg-sidebarBg rounded-xl p-6 border border-slate-700 shadow-xl space-y-4">
+      <!-- Owner Mapping (Elite/SuperAdmin apenas) -->
+      <div id="config-section-owner-mapping" class="bg-sidebarBg rounded-xl p-6 border border-slate-700 shadow-xl space-y-4">
         <div class="flex items-center justify-between">
           <h3 class="font-semibold text-slate-200 flex items-center gap-2">
             <span class="w-2 h-2 rounded-full bg-purple-400"></span>
@@ -605,8 +605,8 @@
         </div>
       </div>
 
-      <!-- HubSpot Webhook URL -->
-      <div class="bg-sidebarBg rounded-xl p-6 border border-slate-700 shadow-xl space-y-3">
+      <!-- HubSpot Webhook URL (Elite/SuperAdmin apenas) -->
+      <div id="config-section-webhook" class="bg-sidebarBg rounded-xl p-6 border border-slate-700 shadow-xl space-y-3">
         <h3 class="font-semibold text-slate-200 flex items-center gap-2">
           <span class="w-2 h-2 rounded-full bg-orange-400"></span>
           Webhook HubSpot
@@ -622,6 +622,24 @@
           </button>
         </div>
         <p class="text-[11px] text-slate-600">Configure o body do webhook no HubSpot com os campos: <code class="text-slate-400">nome</code> e <code class="text-slate-400">telefone</code>.</p>
+      </div>
+
+      <!-- Área Admin (SuperAdmin apenas) -->
+      <div id="config-section-admin" class="hidden bg-sidebarBg rounded-xl p-6 border border-red-500/20 shadow-xl">
+        <div class="flex items-center justify-between">
+          <div>
+            <h3 class="font-semibold text-slate-200 flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-red-400"></span>
+              Administração
+            </h3>
+            <p class="text-xs text-slate-500 mt-1">Acesso à área administrativa do sistema.</p>
+          </div>
+          <button onclick="navigate('admin')"
+            class="py-2 px-4 bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-red-400 text-sm font-semibold rounded-lg transition-colors flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+            Ver Área Admin
+          </button>
+        </div>
       </div>
 
       <button onclick="saveConfig()" id="save-btn"
@@ -865,12 +883,51 @@ function showLogin() {
   document.getElementById('app-screen').classList.add('hidden');
 }
 
+function applyRoleRestrictions(role) {
+  window.currentUserRole = role;
+  const isElite = role === 'elite' || role === 'superadmin';
+  const isSuperAdmin = role === 'superadmin';
+
+  // Elite + SuperAdmin: Clientes nav, HubSpot source tab, config sections HubSpot
+  document.getElementById('nav-clientes').classList.toggle('hidden', !isElite);
+  document.getElementById('src-hubspot-btn').classList.toggle('hidden', !isElite);
+  document.getElementById('config-section-owner-mapping').classList.toggle('hidden', !isElite);
+  document.getElementById('config-section-webhook').classList.toggle('hidden', !isElite);
+
+  // SuperAdmin only: botão Área Admin
+  document.getElementById('config-section-admin').classList.toggle('hidden', !isSuperAdmin);
+
+  // Se Geral está na página de clientes ou hubspot ativo, redireciona
+  if (!isElite) {
+    const active = document.querySelector('.page.active');
+    if (active && active.id === 'page-clientes') navigate('novo');
+    // Se fonte HubSpot estava ativa, volta para sheets
+    if (document.getElementById('source-hubspot') &&
+        !document.getElementById('source-hubspot').classList.contains('hidden')) {
+      setSource('sheets');
+    }
+  }
+}
+
+async function fetchAndApplyRole() {
+  try {
+    const res = await fetch('/api/me/role', {
+      headers: { 'Authorization': `Bearer ${accessToken}` }
+    });
+    const { role } = await res.json();
+    applyRoleRestrictions(role || 'geral');
+  } catch (_) {
+    applyRoleRestrictions('geral');
+  }
+}
+
 function showApp(email) {
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('app-screen').classList.remove('hidden');
   document.getElementById('sidebar-email').textContent = email;
   loadConfig();
   loadWebhookUrl();
+  fetchAndApplyRole();
 }
 
 // ================================================================
