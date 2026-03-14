@@ -14,6 +14,7 @@ from typing import AsyncGenerator, Optional
 import gspread
 import requests
 import uvicorn
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
@@ -47,17 +48,40 @@ def _db_headers(prefer: str = "return=representation") -> dict:
     }
 
 
-def _db_get(table: str, filters: dict = None, columns: str = "*", order: str = None) -> list:
+def _db_get(table: str, filters: dict = None, columns: str = "*", order: str = None, raw_params: dict = None) -> list:
+    """
+    filters: {col: val} → col=eq.val
+    raw_params: passthrough params para filtros avançados (in, gte, ilike, etc.)
+    """
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     params: dict = {"select": columns}
     if filters:
         for k, v in filters.items():
             params[k] = f"eq.{v}"
+    if raw_params:
+        params.update(raw_params)
     if order:
         params["order"] = order
     resp = requests.get(url, headers=_db_headers(), params=params, timeout=15)
     resp.raise_for_status()
     return resp.json()
+
+
+def _db_upsert(table: str, data, on_conflict: str) -> list:
+    """Upsert one or many rows. Returns list of upserted rows."""
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    headers = _db_headers(prefer=f"resolution=merge-duplicates,return=representation")
+    params = {"on_conflict": on_conflict}
+    resp = requests.post(url, headers=headers, json=data, params=params, timeout=15)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _db_delete(table: str, filters: dict) -> None:
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    params = {k: f"eq.{v}" for k, v in filters.items()}
+    resp = requests.delete(url, headers=_db_headers(prefer="return=minimal"), params=params, timeout=15)
+    resp.raise_for_status()
 
 
 def _db_insert(table: str, data) -> list:
@@ -90,11 +114,37 @@ security = HTTPBearer(auto_error=False)
 # Per-user dispatch state: { user_id: { running, events, subscribers } }
 _dispatches: dict[str, dict] = {}
 
-# Shared HubSpot webhook contacts buffer (single pool, user division to be added later)
+# Shared HubSpot webhook contacts buffer (backward compat with existing dispatch)
 _webhook_contacts: list = []
 
 # Raw payloads received from HubSpot (last 50) — for inspection/schema discovery
 _webhook_raw: list = []
+
+# ================================================================
+# SCHEDULER (agendamento de disparos)
+# ================================================================
+scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
+
+
+@app.on_event("startup")
+async def startup_event():
+    scheduler.add_job(check_scheduled_dispatches, "interval", minutes=1, id="check_scheduled")
+    scheduler.start()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    scheduler.shutdown()
+
+
+# ================================================================
+# CSAT URLs por produto (Feature 5)
+# ================================================================
+CSAT_URLS = {
+    "ELITE": "https://tally.so/r/wdg6KD?firstname={primeiro_nome}&consultoria={numero_consultoria}&e-mail={email}",
+    "LABS":  "https://tally.so/r/nre1xl?firstname={primeiro_nome}&consultoria={numero_consultoria}&e-mail={email}",
+    "SCALE": "https://form.adapta.org/r/9qqReQ?firstname={primeiro_nome}&consultoria={numero_consultoria}&e-mail={email}",
+}
 
 
 # ================================================================
@@ -166,6 +216,32 @@ class CredentialsRequest(BaseModel):
     evolution_api_key: str
     instance_name: str
     google_credentials: Optional[dict] = None
+
+
+class OwnerMappingRequest(BaseModel):
+    hubspot_owner_name: str
+    adapta_email: str
+
+
+class ScheduleDispatchRequest(BaseModel):
+    contacts_json: list
+    template: str
+    scheduled_at: str          # ISO 8601 datetime
+    dispatch_type: str = "bulk"
+    lot_every: int = 150
+    lot_min: float = 500.0
+    lot_max: float = 600.0
+    sub_every: int = 30
+    sub_min: float = 158.0
+    sub_max: float = 200.0
+    msg_min: float = 25.0
+    msg_max: float = 50.0
+
+
+class PostCallDispatchRequest(BaseModel):
+    contact_ids: list[str]
+    template: str = "Olá {primeiro_nome}! Obrigado pela reunião. Por favor, responda nossa pesquisa: {link_csat}"
+    scheduled_at: Optional[str] = None  # None = enviar agora
 
 
 # ================================================================
@@ -247,11 +323,15 @@ async def _broadcast(user_id: str, event: dict) -> None:
 
 def _parse_hubspot_payload(payload) -> list[dict]:
     """
-    Parse HubSpot webhook payload into [{name, first_name, phone}].
+    Parse HubSpot webhook payload into contacts with full properties.
     Handles both single object and list. Supports:
       - Simple: {"nome": "...", "telefone": "..."}
-      - HubSpot native: {"properties": {"firstname": {"value":"..."}, "phone": {"value":"..."}}}
-      - HubSpot flat:   {"properties": {"firstname": "...", "phone": "..."}}
+      - HubSpot native: {"properties": {"firstname": {"value":"..."}, ...}}
+      - HubSpot flat:   {"properties": {"firstname": "...", ...}}
+
+    NOTA (Fase 0): Os field names abaixo são estimativas baseadas na API do HubSpot.
+    Após inspecionar /api/webhook/hubspot/raw com um payload real, ajuste os nomes
+    nas variáveis de campo marcadas com # FIELD_NAME.
     """
     items = payload if isinstance(payload, list) else [payload]
     contacts = []
@@ -260,43 +340,148 @@ def _parse_hubspot_payload(payload) -> list[dict]:
         if not isinstance(item, dict):
             continue
 
-        # Simple format: {"nome": "...", "telefone": "..."}
+        props = item.get("properties", {})
+
+        def _prop(key):
+            """Extrai valor de props independente do formato (flat ou nested)."""
+            v = props.get(key, "") if props else ""
+            if isinstance(v, dict):
+                return str(v.get("value", "")).strip()
+            return str(v or "").strip()
+
+        # — Nome —
         name = str(item.get("nome") or item.get("name") or "").strip()
+        if not name:
+            firstname = _prop("firstname")                      # FIELD_NAME
+            lastname = _prop("lastname")                        # FIELD_NAME
+            name = f"{firstname} {lastname}".strip()
+
+        # — Telefone —
         phone = str(item.get("telefone") or item.get("phone") or "").strip()
-
-        # HubSpot properties format
-        if not name or not phone:
-            props = item.get("properties", {})
-            if isinstance(props, dict):
-                def _prop(key):
-                    v = props.get(key, "")
-                    if isinstance(v, dict):
-                        return str(v.get("value", "")).strip()
-                    return str(v or "").strip()
-
-                firstname = _prop("firstname")
-                lastname = _prop("lastname")
-                if firstname or lastname:
-                    name = f"{firstname} {lastname}".strip()
-
-                phone = (
-                    _prop("mobilephone")
-                    or _prop("phone")
-                    or _prop("telefone")
-                    or _prop("whatsapp")
-                )
+        if not phone:
+            phone = (
+                _prop("mobilephone")                            # FIELD_NAME
+                or _prop("phone")                               # FIELD_NAME
+                or _prop("telefone")                            # FIELD_NAME
+                or _prop("whatsapp")                            # FIELD_NAME
+            )
 
         name = name.strip()
         phone = phone.strip()
 
-        if name and phone:
-            contacts.append({
-                "name": name,
-                "first_name": name.split()[0].capitalize(),
-                "phone": normalize_phone(phone),
-            })
+        if not name or not phone:
+            continue
+
+        # — Campos novos —
+        email = _prop("email")                                  # FIELD_NAME
+        etapa_negocio = _prop("dealstage") or _prop("etapa_negocio")    # FIELD_NAME
+        produto = _prop("produto") or _prop("product_line")     # FIELD_NAME
+        numero_consultoria = _prop("numero_consultoria") or _prop("hs_object_id")  # FIELD_NAME
+        owner_name = _prop("hubspot_owner_name") or _prop("owner_name")            # FIELD_NAME
+
+        # — Datas de reunião —
+        data_reuniao_1 = _prop("data_reuniao_1") or _prop("hs_meeting_1_date") or None  # FIELD_NAME
+        data_reuniao_2 = _prop("data_reuniao_2") or _prop("hs_meeting_2_date") or None  # FIELD_NAME
+        data_reuniao_3 = _prop("data_reuniao_3") or _prop("hs_meeting_3_date") or None  # FIELD_NAME
+
+        # — CSATs —
+        csat_reuniao_1 = _prop("csat_reuniao_1") or None        # FIELD_NAME
+        csat_reuniao_2 = _prop("csat_reuniao_2") or None        # FIELD_NAME
+        csat_reuniao_3 = _prop("csat_reuniao_3") or None        # FIELD_NAME
+
+        # — Data de entrada na etapa atual —
+        data_etapa_atual = _prop("hs_stage_probabilities_start_date") or _prop("data_etapa_atual") or None  # FIELD_NAME
+
+        # — HubSpot ID do deal/contato —
+        hubspot_id = (
+            str(item.get("id") or item.get("hs_object_id") or "").strip()
+            or _prop("hs_object_id")
+        ) or None
+
+        contacts.append({
+            # campos para disparo (compatibilidade com engine existente)
+            "name": name,
+            "first_name": name.split()[0].capitalize(),
+            "phone": normalize_phone(phone),
+            # campos novos
+            "email": email or None,
+            "etapa_negocio": etapa_negocio or None,
+            "produto": produto or None,
+            "numero_consultoria": numero_consultoria or None,
+            "owner_name": owner_name or None,
+            "data_reuniao_1": data_reuniao_1 or None,
+            "data_reuniao_2": data_reuniao_2 or None,
+            "data_reuniao_3": data_reuniao_3 or None,
+            "csat_reuniao_1": csat_reuniao_1,
+            "csat_reuniao_2": csat_reuniao_2,
+            "csat_reuniao_3": csat_reuniao_3,
+            "data_etapa_atual": data_etapa_atual or None,
+            "hubspot_id": hubspot_id,
+            "raw_payload": item,
+        })
 
     return contacts
+
+
+def _resolve_owner_user_id(owner_name: str) -> Optional[str]:
+    """Retorna o adapta_user_id para o nome do proprietário HubSpot, ou None."""
+    if not owner_name:
+        return None
+    try:
+        rows = _db_get(
+            "owner_mapping",
+            raw_params={"hubspot_owner_name": f"ilike.{owner_name}"},
+            columns="adapta_user_id,adapta_email",
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        # Se user_id ainda não foi resolvido, busca pelo email e salva
+        if not row.get("adapta_user_id") and row.get("adapta_email"):
+            auth_rows = _db_get(
+                "users",
+                raw_params={"email": f"eq.{row['adapta_email']}"},
+                columns="id",
+            )
+            if auth_rows:
+                uid = auth_rows[0]["id"]
+                _db_patch("owner_mapping", {"adapta_user_id": uid},
+                          {"adapta_email": row["adapta_email"]})
+                return uid
+        return row.get("adapta_user_id")
+    except Exception:
+        return None
+
+
+def _upsert_hubspot_contact(contact: dict) -> None:
+    """Persiste/atualiza contato HubSpot no banco. Silencia erros para não quebrar o webhook."""
+    if not contact.get("hubspot_id"):
+        return
+    try:
+        user_id = _resolve_owner_user_id(contact.get("owner_name"))
+        row = {
+            "hubspot_id": contact["hubspot_id"],
+            "user_id": user_id,
+            "nome": contact["name"],
+            "primeiro_nome": contact["first_name"],
+            "telefone": contact["phone"],
+            "email": contact.get("email"),
+            "etapa_negocio": contact.get("etapa_negocio"),
+            "produto": contact.get("produto"),
+            "numero_consultoria": contact.get("numero_consultoria"),
+            "data_reuniao_1": contact.get("data_reuniao_1"),
+            "data_reuniao_2": contact.get("data_reuniao_2"),
+            "data_reuniao_3": contact.get("data_reuniao_3"),
+            "csat_reuniao_1": contact.get("csat_reuniao_1"),
+            "csat_reuniao_2": contact.get("csat_reuniao_2"),
+            "csat_reuniao_3": contact.get("csat_reuniao_3"),
+            "data_etapa_atual": contact.get("data_etapa_atual"),
+            "raw_payload": contact.get("raw_payload"),
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        _db_upsert("hubspot_contacts", row, on_conflict="hubspot_id")
+    except Exception:
+        pass
 
 
 # ================================================================
@@ -429,7 +614,15 @@ async def hubspot_webhook(request: Request):
         del _webhook_raw[:-50]
 
     new_contacts = _parse_hubspot_payload(body)
+
+    # Backward compat: mantém buffer em memória para disparo direto
     _webhook_contacts.extend(new_contacts)
+
+    # Fase 2: persiste/atualiza no banco (operação aditiva, não bloqueia resposta)
+    loop = asyncio.get_event_loop()
+    for contact in new_contacts:
+        loop.run_in_executor(None, _upsert_hubspot_contact, contact)
+
     return {"received": True, "parsed": len(new_contacts)}
 
 
@@ -566,6 +759,8 @@ async def start_dispatch(
         contacts = list(_webhook_contacts)
         if not contacts:
             raise HTTPException(400, "Nenhum contato recebido via webhook HubSpot.")
+    elif req.source_type == "clients" and req.contacts_json:
+        contacts = json.loads(req.contacts_json)
     else:
         raise HTTPException(400, "Fonte de contatos inválida.")
 
@@ -651,6 +846,380 @@ def get_dispatch_logs(dispatch_id: str, user_id: str = Depends(get_current_user)
         raise HTTPException(404, "Disparo não encontrado.")
     logs = _db_get("dispatch_logs", filters={"dispatch_id": dispatch_id}, order="contact_index")
     return {"logs": logs}
+
+
+# ================================================================
+# OWNER MAPPING (Feature 1 — Fase 3)
+# ================================================================
+
+@app.get("/api/owner-mapping")
+def list_owner_mapping(_: str = Depends(get_current_user)):
+    rows = _db_get("owner_mapping", order="hubspot_owner_name")
+    return {"mappings": rows}
+
+
+@app.post("/api/owner-mapping")
+def create_owner_mapping(req: OwnerMappingRequest, _: str = Depends(get_current_user)):
+    try:
+        inserted = _db_insert("owner_mapping", {
+            "hubspot_owner_name": req.hubspot_owner_name,
+            "adapta_email": req.adapta_email,
+        })
+        return {"status": "ok", "mapping": inserted[0] if inserted else {}}
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao criar mapeamento: {str(e)}")
+
+
+@app.delete("/api/owner-mapping/{mapping_id}")
+def delete_owner_mapping(mapping_id: str, _: str = Depends(get_current_user)):
+    try:
+        _db_delete("owner_mapping", {"id": mapping_id})
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao remover mapeamento: {str(e)}")
+
+
+# ================================================================
+# CLIENTES (Feature 2 — Fase 4)
+# ================================================================
+
+@app.get("/api/clients")
+def list_clients(
+    user_id: str = Depends(get_current_user),
+    etapas: Optional[str] = Query(default=None),       # "Onboarding,Em andamento"
+    dias_na_etapa: Optional[int] = Query(default=None), # mínimo de dias
+    produto: Optional[str] = Query(default=None),
+    sem_reuniao: Optional[bool] = Query(default=None),
+    search: Optional[str] = Query(default=None),
+):
+    raw_params: dict = {"user_id": f"eq.{user_id}"}
+
+    if etapas:
+        etapa_list = etapas.split(",")
+        raw_params["etapa_negocio"] = "in.(" + ",".join(etapa_list) + ")"
+
+    if produto:
+        raw_params["produto"] = f"eq.{produto}"
+
+    if sem_reuniao:
+        raw_params["data_reuniao_1"] = "is.null"
+
+    if search:
+        # Supabase não suporta OR direto via query params simples;
+        # filtramos por nome (ilike) — suficiente para a maioria dos casos
+        raw_params["nome"] = f"ilike.*{search}*"
+
+    if dias_na_etapa is not None:
+        # data_etapa_atual <= now() - interval 'X days'
+        from datetime import timedelta
+        cutoff = (datetime.utcnow() - timedelta(days=dias_na_etapa)).isoformat() + "Z"
+        raw_params["data_etapa_atual"] = f"lte.{cutoff}"
+
+    rows = _db_get(
+        "hubspot_contacts",
+        raw_params=raw_params,
+        order="nome",
+        columns="id,nome,primeiro_nome,telefone,email,etapa_negocio,produto,numero_consultoria,data_etapa_atual,data_reuniao_1",
+    )
+
+    # Calcula dias_na_etapa para cada contato
+    now = datetime.utcnow()
+    for row in rows:
+        if row.get("data_etapa_atual"):
+            try:
+                dt = datetime.fromisoformat(row["data_etapa_atual"].replace("Z", "+00:00"))
+                row["dias_na_etapa"] = (now - dt.replace(tzinfo=None)).days
+            except Exception:
+                row["dias_na_etapa"] = None
+        else:
+            row["dias_na_etapa"] = None
+
+    return {"clients": rows, "total": len(rows)}
+
+
+# ================================================================
+# AGENDAMENTO (Feature 3 — Fase 5)
+# ================================================================
+
+async def check_scheduled_dispatches():
+    """Job executado a cada minuto para disparar agendamentos pendentes."""
+    try:
+        now_iso = datetime.utcnow().isoformat() + "Z"
+        pending = _db_get(
+            "scheduled_dispatches",
+            raw_params={"status": "eq.pending", "scheduled_at": f"lte.{now_iso}"},
+        )
+        for sched in pending:
+            try:
+                _db_patch("scheduled_dispatches", {"status": "running"}, {"id": sched["id"]})
+
+                creds_rows = _db_get("user_credentials", filters={"user_id": sched["user_id"]})
+                if not creds_rows:
+                    _db_patch("scheduled_dispatches", {"status": "cancelled"}, {"id": sched["id"]})
+                    continue
+
+                cred = creds_rows[0]
+                contacts = sched["contacts_json"] if isinstance(sched["contacts_json"], list) else json.loads(sched["contacts_json"])
+                cfg = sched.get("lot_config") or {
+                    "lot_every": 150, "lot_min": 500.0, "lot_max": 600.0,
+                    "sub_every": 30, "sub_min": 158.0, "sub_max": 200.0,
+                    "msg_min": 25.0, "msg_max": 50.0,
+                }
+
+                dispatch_data = {
+                    "user_id": sched["user_id"],
+                    "source_type": sched.get("dispatch_type", "bulk"),
+                    "template": sched["template"],
+                    "status": "running",
+                    "total_contacts": len(contacts),
+                    "lot_config": cfg,
+                    "started_at": datetime.utcnow().isoformat() + "Z",
+                }
+                inserted = _db_insert("dispatches", dispatch_data)
+                dispatch_id = inserted[0]["id"] if isinstance(inserted, list) else inserted["id"]
+
+                _db_patch("scheduled_dispatches", {"dispatch_id": dispatch_id}, {"id": sched["id"]})
+
+                state = get_user_state(sched["user_id"])
+                state["running"] = True
+                state["events"] = []
+
+                asyncio.create_task(run_dispatch(
+                    sched["user_id"], dispatch_id, contacts, sched["template"], cfg,
+                    cred["evolution_api_url"], cred["evolution_api_key"], cred["instance_name"],
+                ))
+
+                _db_patch("scheduled_dispatches", {"status": "done"}, {"id": sched["id"]})
+            except Exception:
+                _db_patch("scheduled_dispatches", {"status": "cancelled"}, {"id": sched["id"]})
+    except Exception:
+        pass
+
+
+@app.post("/api/dispatch/schedule")
+def schedule_dispatch(req: ScheduleDispatchRequest, user_id: str = Depends(get_current_user)):
+    try:
+        cfg = {
+            "lot_every": req.lot_every, "lot_min": req.lot_min, "lot_max": req.lot_max,
+            "sub_every": req.sub_every, "sub_min": req.sub_min, "sub_max": req.sub_max,
+            "msg_min": req.msg_min, "msg_max": req.msg_max,
+        }
+        inserted = _db_insert("scheduled_dispatches", {
+            "user_id": user_id,
+            "scheduled_at": req.scheduled_at,
+            "dispatch_type": req.dispatch_type,
+            "contacts_json": req.contacts_json,
+            "template": req.template,
+            "lot_config": cfg,
+        })
+        return {"status": "scheduled", "id": inserted[0]["id"]}
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao agendar disparo: {str(e)}")
+
+
+@app.get("/api/dispatch/scheduled")
+def list_scheduled(user_id: str = Depends(get_current_user)):
+    rows = _db_get(
+        "scheduled_dispatches",
+        filters={"user_id": user_id},
+        order="scheduled_at.desc",
+        columns="id,scheduled_at,status,dispatch_type,template,created_at",
+    )
+    return {"scheduled": rows}
+
+
+@app.delete("/api/dispatch/scheduled/{sched_id}")
+def cancel_scheduled(sched_id: str, user_id: str = Depends(get_current_user)):
+    rows = _db_get("scheduled_dispatches", filters={"id": sched_id, "user_id": user_id}, columns="id,status")
+    if not rows:
+        raise HTTPException(404, "Agendamento não encontrado.")
+    if rows[0]["status"] != "pending":
+        raise HTTPException(409, "Apenas agendamentos pendentes podem ser cancelados.")
+    _db_patch("scheduled_dispatches", {"status": "cancelled"}, {"id": sched_id})
+    return {"status": "cancelled"}
+
+
+# ================================================================
+# DISPARO PÓS CALL — CSAT (Feature 5 — Fase 6)
+# ================================================================
+
+def _build_csat_url(produto: str, contact: dict) -> str:
+    """Gera a URL do CSAT substituindo as variáveis pelo produto."""
+    template_url = CSAT_URLS.get((produto or "").upper(), "")
+    if not template_url:
+        return ""
+    return (
+        template_url
+        .replace("{primeiro_nome}", contact.get("primeiro_nome") or contact.get("first_name") or "")
+        .replace("{numero_consultoria}", contact.get("numero_consultoria") or "")
+        .replace("{email}", contact.get("email") or "")
+    )
+
+
+def _render_postcall_msg(template: str, contact: dict) -> str:
+    url = _build_csat_url(contact.get("produto", ""), contact)
+    return (
+        template
+        .replace("{primeiro_nome}", contact.get("primeiro_nome") or contact.get("first_name") or "")
+        .replace("{link_csat}", url)
+        .replace("{nome}", contact.get("nome") or contact.get("name") or "")
+    )
+
+
+@app.post("/api/dispatch/postcall")
+async def postcall_dispatch(
+    req: PostCallDispatchRequest,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user),
+):
+    # Busca contatos pelo IDs fornecidos
+    if not req.contact_ids:
+        raise HTTPException(400, "Nenhum contato selecionado.")
+
+    id_list = ",".join(req.contact_ids)
+    rows = _db_get(
+        "hubspot_contacts",
+        raw_params={"id": f"in.({id_list})", "user_id": f"eq.{user_id}"},
+        columns="id,nome,primeiro_nome,telefone,email,produto,numero_consultoria",
+    )
+    if not rows:
+        raise HTTPException(404, "Contatos não encontrados.")
+
+    # Monta lista de contatos no formato da engine de disparo
+    contacts = []
+    for row in rows:
+        contacts.append({
+            "name": row.get("nome") or "",
+            "first_name": row.get("primeiro_nome") or "",
+            "phone": row.get("telefone") or "",
+            "email": row.get("email") or "",
+            "produto": row.get("produto") or "",
+            "numero_consultoria": row.get("numero_consultoria") or "",
+        })
+
+    # Se agendado, salva e retorna
+    if req.scheduled_at:
+        inserted = _db_insert("scheduled_dispatches", {
+            "user_id": user_id,
+            "scheduled_at": req.scheduled_at,
+            "dispatch_type": "postcall",
+            "contacts_json": contacts,
+            "template": req.template,
+        })
+        return {"status": "scheduled", "id": inserted[0]["id"], "total": len(contacts)}
+
+    # Disparo imediato
+    state = get_user_state(user_id)
+    if state["running"]:
+        raise HTTPException(409, "Já existe um disparo em andamento.")
+
+    creds_rows = _db_get("user_credentials", filters={"user_id": user_id})
+    if not creds_rows:
+        raise HTTPException(400, "Configure as credenciais primeiro em Configuração.")
+    cred = creds_rows[0]
+
+    cfg = {
+        "lot_every": 150, "lot_min": 500.0, "lot_max": 600.0,
+        "sub_every": 30, "sub_min": 158.0, "sub_max": 200.0,
+        "msg_min": 25.0, "msg_max": 50.0,
+    }
+
+    dispatch_data = {
+        "user_id": user_id,
+        "source_type": "postcall",
+        "template": req.template,
+        "status": "running",
+        "total_contacts": len(contacts),
+        "lot_config": cfg,
+        "started_at": datetime.utcnow().isoformat() + "Z",
+    }
+    inserted = _db_insert("dispatches", dispatch_data)
+    dispatch_id = inserted[0]["id"] if isinstance(inserted, list) else inserted["id"]
+
+    # Pré-renderiza mensagens com URL CSAT por contato
+    contacts_rendered = []
+    for c in contacts:
+        contacts_rendered.append({
+            **c,
+            "_rendered_msg": _render_postcall_msg(req.template, c),
+        })
+
+    state["running"] = True
+    state["events"] = []
+
+    # Usa engine existente mas sobrescreve render_msg para usar _rendered_msg
+    async def run_postcall():
+        total = len(contacts_rendered)
+        ok = fail = 0
+        loop = asyncio.get_event_loop()
+        logs_batch = []
+
+        for i, contact in enumerate(contacts_rendered, 1):
+            msg = contact["_rendered_msg"]
+            try:
+                await loop.run_in_executor(
+                    None, _send_sync, contact["phone"], msg,
+                    cred["evolution_api_url"], cred["evolution_api_key"], cred["instance_name"],
+                )
+                status, err = "success", ""
+                ok += 1
+            except Exception as e:
+                status = "error"
+                err = str(e)[:120]
+                fail += 1
+
+            logs_batch.append({
+                "dispatch_id": dispatch_id,
+                "contact_index": i,
+                "contact_name": contact["name"],
+                "contact_phone": contact["phone"],
+                "status": status,
+                "error_message": err or None,
+            })
+
+            if len(logs_batch) >= 50:
+                try:
+                    _db_insert("dispatch_logs", logs_batch)
+                except Exception:
+                    pass
+                logs_batch = []
+
+            await _broadcast(user_id, {
+                "type": "sent", "index": i, "total": total,
+                "name": contact["name"], "phone": contact["phone"],
+                "first": contact["first_name"], "status": status, "error": err,
+                "ok": ok, "fail": fail,
+            })
+
+            if i < total:
+                pause_secs, pause_reason = get_pause(i, cfg)
+                for remaining in range(int(pause_secs), 0, -1):
+                    await _broadcast(user_id, {
+                        "type": "pause", "seconds": remaining,
+                        "total_pause": int(pause_secs), "reason": pause_reason,
+                    })
+                    await asyncio.sleep(1)
+
+        if logs_batch:
+            try:
+                _db_insert("dispatch_logs", logs_batch)
+            except Exception:
+                pass
+
+        try:
+            _db_patch("dispatches", {
+                "status": "completed", "sent_count": ok, "error_count": fail,
+                "finished_at": datetime.utcnow().isoformat() + "Z",
+            }, {"id": dispatch_id})
+        except Exception:
+            pass
+
+        state = get_user_state(user_id)
+        state["running"] = False
+        await _broadcast(user_id, {"type": "done", "ok": ok, "fail": fail})
+
+    background_tasks.add_task(run_postcall)
+    return {"status": "started", "total": len(contacts), "dispatch_id": dispatch_id}
 
 
 if __name__ == "__main__":
