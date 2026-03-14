@@ -183,8 +183,9 @@ async def get_current_user(
         user_data = await loop.run_in_executor(None, _validate_token_sync, jwt_token)
         email = user_data.get("email", "")
         user_id = user_data.get("id", "")
-        if not email.endswith("@adapta.org"):
-            raise HTTPException(status_code=403, detail="Acesso restrito a emails @adapta.org.")
+        allowed = ("@adapta.org", "@copyexperts.com.br")
+        if not any(email.endswith(d) for d in allowed):
+            raise HTTPException(status_code=403, detail="Acesso restrito a emails corporativos.")
         return user_id
     except HTTPException:
         raise

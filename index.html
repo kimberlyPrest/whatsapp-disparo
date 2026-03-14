@@ -100,7 +100,6 @@
           </svg>
           Entrar
         </button>
-        <p class="text-center text-xs text-slate-600 pt-1">Acesso restrito a emails @adapta.org</p>
       </div>
 
       <!-- ---- SIGNUP FORM ---- -->
@@ -114,33 +113,43 @@
             onblur="onSignupEmailBlur(this.value)"
             onkeydown="if(event.key==='Enter') signup()"/>
         </div>
-        <div id="signup-name-wrap" class="hidden">
-          <label class="block text-sm font-medium text-slate-300 mb-1.5">Nome completo</label>
-          <input id="signup-name" type="text" placeholder="Seu Nome"
-            class="w-full bg-darkBg border border-slate-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-primary text-slate-200 placeholder-slate-600"
-            onkeydown="if(event.key==='Enter') signup()"/>
-        </div>
-        <div>
-          <label class="block text-sm font-medium text-slate-300 mb-1.5">Senha</label>
-          <input id="signup-password" type="password" placeholder="Mín. 6 caracteres"
-            class="w-full bg-darkBg border border-slate-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-primary text-slate-200 placeholder-slate-600"
-            onkeydown="if(event.key==='Enter') signup()"/>
-        </div>
-        <div>
-          <label class="block text-sm font-medium text-slate-300 mb-1.5">Confirmar senha</label>
-          <input id="signup-password2" type="password" placeholder="Repita a senha"
-            class="w-full bg-darkBg border border-slate-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-primary text-slate-200 placeholder-slate-600"
-            onkeydown="if(event.key==='Enter') signup()"/>
-        </div>
-        <button onclick="signup()" id="signup-btn"
-          class="w-full py-3 bg-primary hover:bg-green-400 text-darkBg font-bold rounded-lg transition-colors flex items-center justify-center gap-2">
-          <svg id="signup-spinner" class="hidden w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        <!-- Aviso: domínio não permitido -->
+        <div id="signup-domain-warning" class="hidden bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3 flex gap-3 items-start">
+          <svg class="w-5 h-5 text-amber-400 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
           </svg>
-          Criar Conta
-        </button>
-        <p class="text-center text-xs text-slate-600 pt-1">Acesso restrito a emails @adapta.org</p>
+          <p class="text-sm text-amber-300">Este sistema é destinado exclusivamente a funcionários da Adapta. Utilize o seu email corporativo para criar uma conta.</p>
+        </div>
+
+        <!-- Campos extras: aparecem após validar o domínio -->
+        <div id="signup-fields-wrap" class="hidden space-y-4">
+          <div id="signup-name-wrap">
+            <label class="block text-sm font-medium text-slate-300 mb-1.5">Nome completo</label>
+            <input id="signup-name" type="text" placeholder="Seu Nome"
+              class="w-full bg-darkBg border border-slate-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-primary text-slate-200 placeholder-slate-600"
+              onkeydown="if(event.key==='Enter') signup()"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-1.5">Senha</label>
+            <input id="signup-password" type="password" placeholder="Mín. 6 caracteres"
+              class="w-full bg-darkBg border border-slate-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-primary text-slate-200 placeholder-slate-600"
+              onkeydown="if(event.key==='Enter') signup()"/>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-1.5">Confirmar senha</label>
+            <input id="signup-password2" type="password" placeholder="Repita a senha"
+              class="w-full bg-darkBg border border-slate-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-primary text-slate-200 placeholder-slate-600"
+              onkeydown="if(event.key==='Enter') signup()"/>
+          </div>
+          <button onclick="signup()" id="signup-btn"
+            class="w-full py-3 bg-primary hover:bg-green-400 text-darkBg font-bold rounded-lg transition-colors flex items-center justify-center gap-2">
+            <svg id="signup-spinner" class="hidden w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+            </svg>
+            Criar Conta
+          </button>
+        </div>
       </div>
 
     </div>
@@ -887,19 +896,33 @@ function switchAuthTab(tab) {
 // ================================================================
 // AUTH
 // ================================================================
+function isAllowedDomain(email) {
+  return email.endsWith('@adapta.org') || email.endsWith('@copyexperts.com.br');
+}
+
 async function onSignupEmailBlur(value) {
-  const wrap = document.getElementById('signup-name-wrap');
-  if (!value.endsWith('@adapta.org')) { wrap.classList.add('hidden'); return; }
+  const warning = document.getElementById('signup-domain-warning');
+  const fields  = document.getElementById('signup-fields-wrap');
+
+  if (!value) { warning.classList.add('hidden'); fields.classList.add('hidden'); return; }
+
+  if (!isAllowedDomain(value)) {
+    warning.classList.remove('hidden');
+    fields.classList.add('hidden');
+    return;
+  }
+
+  warning.classList.add('hidden');
+  fields.classList.remove('hidden');
+
   try {
     const res = await fetch(`/api/owner-name?email=${encodeURIComponent(value)}`);
     const { nome } = await res.json();
     const nameInput = document.getElementById('signup-name');
     nameInput.value = nome || '';
-    wrap.classList.remove('hidden');
     nameInput.focus();
   } catch (_) {
     document.getElementById('signup-name').value = '';
-    wrap.classList.remove('hidden');
   }
 }
 
@@ -909,7 +932,7 @@ async function login() {
   const errBox   = document.getElementById('login-error');
 
   if (!email || !password) { showError(errBox, 'Preencha email e senha.'); return; }
-  if (!email.endsWith('@adapta.org')) { showError(errBox, 'Acesso restrito a emails @adapta.org.'); return; }
+  if (!isAllowedDomain(email)) { showError(errBox, 'Acesso restrito a emails corporativos.'); return; }
 
   setAuthLoading('login', true);
   errBox.classList.add('hidden');
@@ -935,7 +958,7 @@ async function signup() {
 
   if (!name)     { showError(errBox, 'Informe seu nome.'); return; }
   if (!email)    { showError(errBox, 'Informe o email.'); return; }
-  if (!email.endsWith('@adapta.org')) { showError(errBox, 'Acesso restrito a emails @adapta.org.'); return; }
+  if (!isAllowedDomain(email)) { showError(errBox, 'Acesso restrito a emails corporativos.'); return; }
   if (password.length < 6) { showError(errBox, 'A senha deve ter pelo menos 6 caracteres.'); return; }
   if (password !== password2) { showError(errBox, 'As senhas não coincidem.'); return; }
 
