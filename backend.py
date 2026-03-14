@@ -10,7 +10,9 @@ import io
 import json
 import os
 import random
+from collections import defaultdict
 from datetime import datetime
+from time import monotonic
 from typing import AsyncGenerator, Optional
 
 import gspread
@@ -33,6 +35,23 @@ SUPABASE_ANON_KEY   = os.environ["SUPABASE_ANON_KEY"]
 
 # HubSpot webhook secret (opcional — se definido, verifica assinatura HMAC)
 HUBSPOT_CLIENT_SECRET = os.getenv("HUBSPOT_CLIENT_SECRET")
+
+# ================================================================
+# RATE LIMITER (in-memory, para endpoints públicos sensíveis)
+# ================================================================
+_rate_store: dict[str, list[float]] = defaultdict(list)
+_RATE_WINDOW = 900   # 15 minutos
+_RATE_MAX    = 5     # máx 5 requests por janela por IP
+
+def _check_rate_limit(ip: str) -> bool:
+    now = monotonic()
+    hits = [t for t in _rate_store[ip] if now - t < _RATE_WINDOW]
+    if len(hits) >= _RATE_MAX:
+        _rate_store[ip] = hits
+        return False
+    hits.append(now)
+    _rate_store[ip] = hits
+    return True
 
 COL_NAME = "Nome"
 COL_PHONE = "Telefone"
@@ -899,15 +918,25 @@ async def get_my_role(email: str = Depends(get_current_user_email)):
     return {"role": _get_user_role(email)}
 
 
-@app.get("/api/owner-name")
-def get_owner_name(email: str):
-    """Retorna o nome do proprietário pelo email. Público — usado no formulário de cadastro."""
+class OwnerNameRequest(BaseModel):
+    email: str
+
+@app.post("/api/auth/owner-name")
+def lookup_owner_name(req: OwnerNameRequest, request: Request):
+    """
+    Retorna nome pré-preenchido para o formulário de cadastro.
+    Rate-limited por IP (5 req / 15 min) para prevenir enumeração de emails.
+    """
+    ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(ip):
+        raise HTTPException(429, "Muitas tentativas. Aguarde alguns minutos.")
+    email = req.email.strip().lower()
     if not email:
         return {"nome": None}
     try:
         rows = _db_get(
             "owner_mapping",
-            raw_params={"adapta_email": f"eq.{email.lower()}"},
+            raw_params={"adapta_email": f"eq.{email}"},
             columns="nome",
         )
         return {"nome": rows[0]["nome"] if rows else None}

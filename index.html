@@ -973,7 +973,12 @@ async function onSignupEmailBlur(value) {
   fields.classList.remove('hidden');
 
   try {
-    const res = await fetch(`/api/owner-name?email=${encodeURIComponent(value)}`);
+    const res = await fetch('/api/auth/owner-name', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: value }),
+    });
+    if (res.status === 429) { document.getElementById('signup-name').value = ''; return; }
     const { nome } = await res.json();
     const nameInput = document.getElementById('signup-name');
     nameInput.value = nome || '';
