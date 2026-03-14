@@ -16,6 +16,7 @@ from time import monotonic
 from typing import AsyncGenerator, Optional
 
 import gspread
+import httpx
 import requests
 import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -151,6 +152,14 @@ _webhook_contacts: list = []
 _webhook_raw: list = []
 
 # ================================================================
+# HTTP CLIENTS (persistentes — connection pooling)
+# ================================================================
+# Usado para envios à Evolution API (alta frequência — centenas de chamadas por disparo)
+_evolution_client: Optional[httpx.AsyncClient] = None
+# Usado para chamadas async ao Supabase REST (scheduler, webhook upsert)
+_db_async_client: Optional[httpx.AsyncClient] = None
+
+# ================================================================
 # SCHEDULER (agendamento de disparos)
 # ================================================================
 scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
@@ -158,6 +167,10 @@ scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
 
 @app.on_event("startup")
 async def startup_event():
+    global _evolution_client, _db_async_client
+    _evolution_client = httpx.AsyncClient(timeout=30)
+    _db_async_client  = httpx.AsyncClient(timeout=15)
+
     scheduler.add_job(check_scheduled_dispatches, "interval", minutes=1, id="check_scheduled")
     scheduler.start()
     # Limpa dispatches que ficaram travados em "running" de um processo anterior
@@ -176,6 +189,10 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     scheduler.shutdown()
+    if _evolution_client:
+        await _evolution_client.aclose()
+    if _db_async_client:
+        await _db_async_client.aclose()
 
 
 # ================================================================
@@ -346,6 +363,59 @@ def _send_sync(phone: str, message: str, api_url: str, api_key: str, instance: s
     headers = {"apikey": api_key, "Content-Type": "application/json"}
     resp = requests.post(
         url, json={"number": phone, "text": message}, headers=headers, timeout=30
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+async def _send_async(phone: str, message: str, api_url: str, api_key: str, instance: str) -> dict:
+    """Envia mensagem via Evolution API sem bloquear o event loop."""
+    resp = await _evolution_client.post(
+        f"{api_url}/message/sendText/{instance}",
+        json={"number": phone, "text": message},
+        headers={"apikey": api_key, "Content-Type": "application/json"},
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+# ================================================================
+# ASYNC DB HELPERS (httpx — para uso em coroutines: scheduler, webhook)
+# ================================================================
+
+async def _db_get_async(
+    table: str, filters: dict = None, columns: str = "*",
+    order: str = None, raw_params: dict = None,
+) -> list:
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    params: dict = {"select": columns}
+    if filters:
+        for k, v in filters.items():
+            params[k] = f"eq.{v}"
+    if raw_params:
+        params.update(raw_params)
+    if order:
+        params["order"] = order
+    resp = await _db_async_client.get(url, headers=_db_headers(), params=params)
+    resp.raise_for_status()
+    return resp.json()
+
+
+async def _db_patch_async(table: str, data: dict, filters: dict) -> None:
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    params = {k: f"eq.{v}" for k, v in filters.items()}
+    resp = await _db_async_client.patch(url, headers=_db_headers(), json=data, params=params)
+    resp.raise_for_status()
+
+
+async def _db_upsert_async(table: str, data, on_conflict: str) -> list:
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    params = {"on_conflict": on_conflict}
+    resp = await _db_async_client.post(
+        url,
+        headers=_db_headers(prefer=f"resolution=merge-duplicates,return=representation"),
+        json=data,
+        params=params,
     )
     resp.raise_for_status()
     return resp.json()
@@ -531,6 +601,37 @@ def _upsert_hubspot_contact(contact: dict) -> None:
         pass
 
 
+async def _upsert_hubspot_contact_async(contact: dict) -> None:
+    """Versão async de _upsert_hubspot_contact — usa _db_upsert_async sem bloquear."""
+    if not contact.get("hubspot_id"):
+        return
+    try:
+        user_id = _resolve_owner_user_id(contact.get("owner_id"))
+        row = {
+            "hubspot_id": contact["hubspot_id"],
+            "user_id": user_id,
+            "nome": contact["name"],
+            "primeiro_nome": contact["first_name"],
+            "telefone": contact["phone"],
+            "email": contact.get("email"),
+            "etapa_negocio": contact.get("etapa_negocio"),
+            "produto": contact.get("produto"),
+            "numero_consultoria": contact.get("numero_consultoria"),
+            "data_reuniao_1": contact.get("data_reuniao_1"),
+            "data_reuniao_2": contact.get("data_reuniao_2"),
+            "data_reuniao_3": contact.get("data_reuniao_3"),
+            "csat_reuniao_1": contact.get("csat_reuniao_1"),
+            "csat_reuniao_2": contact.get("csat_reuniao_2"),
+            "csat_reuniao_3": contact.get("csat_reuniao_3"),
+            "data_etapa_atual": contact.get("data_etapa_atual"),
+            "raw_payload": contact.get("raw_payload"),
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        await _db_upsert_async("hubspot_contacts", row, on_conflict="hubspot_id")
+    except Exception:
+        pass
+
+
 # ================================================================
 # DISPATCH TASK
 # ================================================================
@@ -547,15 +648,12 @@ async def run_dispatch(
 ) -> None:
     total = len(contacts)
     ok = fail = 0
-    loop = asyncio.get_event_loop()
     logs_batch = []
 
     for i, contact in enumerate(contacts, 1):
         msg = render_fn(contact) if render_fn else render_msg(template, contact)
         try:
-            await loop.run_in_executor(
-                None, _send_sync, contact["phone"], msg, api_url, api_key, instance
-            )
+            await _send_async(contact["phone"], msg, api_url, api_key, instance)
             status, err = "success", ""
             ok += 1
         except Exception as e:
@@ -678,10 +776,9 @@ async def hubspot_webhook(request: Request):
     # Backward compat: mantém buffer em memória para disparo direto
     _webhook_contacts.extend(new_contacts)
 
-    # Fase 2: persiste/atualiza no banco (operação aditiva, não bloqueia resposta)
-    loop = asyncio.get_event_loop()
+    # Fase 2: persiste/atualiza no banco de forma assíncrona (não bloqueia a resposta)
     for contact in new_contacts:
-        loop.run_in_executor(None, _upsert_hubspot_contact, contact)
+        asyncio.create_task(_upsert_hubspot_contact_async(contact))
 
     return {"received": True, "parsed": len(new_contacts)}
 
@@ -894,9 +991,18 @@ async def dispatch_stream(user_id: str = Depends(get_current_user)):
 # HISTORY
 # ----------------------------------------------------------------
 @app.get("/api/dispatches")
-def list_dispatches(user_id: str = Depends(get_current_user)):
-    rows = _db_get("dispatches", filters={"user_id": user_id}, order="created_at.desc")
-    return {"dispatches": rows}
+def list_dispatches(
+    user_id: str = Depends(get_current_user),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+):
+    rows = _db_get(
+        "dispatches",
+        filters={"user_id": user_id},
+        order="created_at.desc",
+        raw_params={"limit": page_size, "offset": (page - 1) * page_size},
+    )
+    return {"dispatches": rows, "page": page, "page_size": page_size, "has_more": len(rows) == page_size}
 
 
 @app.get("/api/dispatches/{dispatch_id}/logs")
@@ -990,11 +1096,13 @@ def delete_owner_mapping(mapping_id: str, _: str = Depends(get_current_user)):
 @app.get("/api/clients")
 def list_clients(
     user_id: str = Depends(get_current_user),
-    etapas: Optional[str] = Query(default=None),       # "Onboarding,Em andamento"
-    dias_na_etapa: Optional[int] = Query(default=None), # mínimo de dias
+    etapas: Optional[str] = Query(default=None),
+    dias_na_etapa: Optional[int] = Query(default=None),
     produto: Optional[str] = Query(default=None),
     sem_reuniao: Optional[bool] = Query(default=None),
     search: Optional[str] = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
 ):
     raw_params: dict = {"user_id": f"eq.{user_id}"}
 
@@ -1009,15 +1117,15 @@ def list_clients(
         raw_params["data_reuniao_1"] = "is.null"
 
     if search:
-        # Supabase não suporta OR direto via query params simples;
-        # filtramos por nome (ilike) — suficiente para a maioria dos casos
         raw_params["nome"] = f"ilike.*{search}*"
 
     if dias_na_etapa is not None:
-        # data_etapa_atual <= now() - interval 'X days'
         from datetime import timedelta
         cutoff = (datetime.utcnow() - timedelta(days=dias_na_etapa)).isoformat() + "Z"
         raw_params["data_etapa_atual"] = f"lte.{cutoff}"
+
+    raw_params["limit"]  = page_size
+    raw_params["offset"] = (page - 1) * page_size
 
     rows = _db_get(
         "hubspot_contacts",
@@ -1026,7 +1134,6 @@ def list_clients(
         columns="id,nome,primeiro_nome,telefone,email,etapa_negocio,produto,numero_consultoria,data_etapa_atual,data_reuniao_1",
     )
 
-    # Calcula dias_na_etapa para cada contato
     now = datetime.utcnow()
     for row in rows:
         if row.get("data_etapa_atual"):
@@ -1038,7 +1145,12 @@ def list_clients(
         else:
             row["dias_na_etapa"] = None
 
-    return {"clients": rows, "total": len(rows)}
+    return {
+        "clients": rows,
+        "page": page,
+        "page_size": page_size,
+        "has_more": len(rows) == page_size,
+    }
 
 
 # ================================================================
@@ -1049,17 +1161,17 @@ async def check_scheduled_dispatches():
     """Job executado a cada minuto para disparar agendamentos pendentes."""
     try:
         now_iso = datetime.utcnow().isoformat() + "Z"
-        pending = _db_get(
+        pending = await _db_get_async(
             "scheduled_dispatches",
             raw_params={"status": "eq.pending", "scheduled_at": f"lte.{now_iso}"},
         )
         for sched in pending:
             try:
-                _db_patch("scheduled_dispatches", {"status": "running"}, {"id": sched["id"]})
+                await _db_patch_async("scheduled_dispatches", {"status": "running"}, {"id": sched["id"]})
 
-                creds_rows = _db_get("user_credentials", filters={"user_id": sched["user_id"]})
+                creds_rows = await _db_get_async("user_credentials", filters={"user_id": sched["user_id"]})
                 if not creds_rows:
-                    _db_patch("scheduled_dispatches", {"status": "cancelled"}, {"id": sched["id"]})
+                    await _db_patch_async("scheduled_dispatches", {"status": "cancelled"}, {"id": sched["id"]})
                     continue
 
                 cred = creds_rows[0]
@@ -1082,7 +1194,7 @@ async def check_scheduled_dispatches():
                 inserted = _db_insert("dispatches", dispatch_data)
                 dispatch_id = inserted[0]["id"] if isinstance(inserted, list) else inserted["id"]
 
-                _db_patch("scheduled_dispatches", {"dispatch_id": dispatch_id}, {"id": sched["id"]})
+                await _db_patch_async("scheduled_dispatches", {"dispatch_id": dispatch_id}, {"id": sched["id"]})
 
                 state = get_user_state(sched["user_id"])
                 state["running"] = True
@@ -1093,9 +1205,9 @@ async def check_scheduled_dispatches():
                     cred["evolution_api_url"], cred["evolution_api_key"], cred["instance_name"],
                 ))
 
-                _db_patch("scheduled_dispatches", {"status": "done"}, {"id": sched["id"]})
+                await _db_patch_async("scheduled_dispatches", {"status": "done"}, {"id": sched["id"]})
             except Exception:
-                _db_patch("scheduled_dispatches", {"status": "cancelled"}, {"id": sched["id"]})
+                await _db_patch_async("scheduled_dispatches", {"status": "cancelled"}, {"id": sched["id"]})
     except Exception:
         pass
 
