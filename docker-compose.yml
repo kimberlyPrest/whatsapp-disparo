@@ -22,7 +22,8 @@ services:
   api:
     build: .
     command: python backend.py
-    env_file: .env
+    env_file:
+      - .env
     environment:
       # Sobrescreve POSTGRES_HOST para usar o serviço interno do compose
       POSTGRES_HOST: postgres:5432
@@ -36,7 +37,8 @@ services:
   worker:
     build: .
     command: python vps_queue/worker.py
-    env_file: .env
+    env_file:
+      - .env
     environment:
       POSTGRES_HOST: postgres:5432
     depends_on:
