@@ -1,0 +1,48 @@
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB:       ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Cria a tabela dispatch_queue automaticamente na 1ª inicialização
+      - ./vps_queue/setup.sql:/docker-entrypoint-initdb.d/01_setup.sql
+    ports:
+      - "32770:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    command: python backend.py
+    env_file: .env
+    environment:
+      # Sobrescreve POSTGRES_HOST para usar o serviço interno do compose
+      POSTGRES_HOST: postgres:5432
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: python vps_queue/worker.py
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres:5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
