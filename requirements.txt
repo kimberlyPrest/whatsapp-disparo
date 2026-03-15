@@ -1,8 +1,9 @@
 gspread==6.1.2
 google-auth==2.29.0
-requests==2.32.3
 httpx==0.28.1
+PyJWT==2.10.1
 fastapi==0.115.12
 uvicorn==0.34.0
 python-multipart==0.0.20
 apscheduler==3.10.4
+psycopg2-binary==2.9.9

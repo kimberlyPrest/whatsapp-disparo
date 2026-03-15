@@ -281,7 +281,7 @@
                 <button onclick="loadHubspotContacts()" class="ml-auto text-xs text-slate-400 hover:text-slate-200 underline">Atualizar</button>
                 <button onclick="clearHubspotContacts()" class="text-xs text-red-400 hover:text-red-300 underline">Limpar</button>
               </div>
-              <p class="text-xs text-slate-500">Contatos chegam automaticamente via webhook do HubSpot. Configure a URL do webhook em <button onclick="showPage('config')" class="text-primary underline">Configuração</button>.</p>
+              <p class="text-xs text-slate-500">Contatos chegam automaticamente via webhook do HubSpot. Configure a URL do webhook em <button onclick="navigate('config')" class="text-primary underline">Configuração</button>.</p>
             </div>
           </div>
         </div>
@@ -493,7 +493,7 @@
           <h2 class="text-xl font-bold">Histórico de Disparos</h2>
           <p class="text-slate-400 text-sm mt-1">Todos os seus disparos com status e detalhes.</p>
         </div>
-        <button onclick="loadHistory()" class="text-sm text-slate-400 hover:text-primary flex items-center gap-1.5 transition-colors">
+        <button onclick="loadHistory(true)" class="text-sm text-slate-400 hover:text-primary flex items-center gap-1.5 transition-colors">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
           Atualizar
         </button>
@@ -504,6 +504,12 @@
           <svg class="w-12 h-12 mx-auto mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
           <p>Nenhum disparo encontrado.</p>
         </div>
+      </div>
+
+      <div id="history-more-container" class="hidden flex justify-center pt-2">
+        <button onclick="loadMoreHistory()" class="text-sm text-primary hover:text-primary/80 border border-primary/30 hover:border-primary/60 px-6 py-2 rounded-lg transition-colors">
+          Carregar mais
+        </button>
       </div>
 
       <!-- Logs modal -->
@@ -843,11 +849,9 @@
 <!-- ============================================================ SCRIPT -->
 <script>
 // ================================================================
-// SUPABASE
+// SUPABASE — configuração buscada do backend em runtime
 // ================================================================
-const SUPABASE_URL  = 'https://aucdgkmujqzhginokegx.supabase.co';
-const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF1Y2Rna211anF6aGdpbm9rZWd4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMzMjM4MDgsImV4cCI6MjA4ODg5OTgwOH0.s5TJJadX45oxRj6_HZu-bKbdAsn_1QDo_YOy5kV0-ao';
-const sbClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+let sbClient = null;
 
 let accessToken = null;
 let contacts    = [];
@@ -856,15 +860,22 @@ let csvFilename = '';
 let currentSource = 'sheets';
 let dispatchRunning = false;
 let currentDispatchId = null;
+let activeEventSource = null;
 let modalLogsData = [];
 const CIRCUMFERENCE = 502.65;
 
 window.onbeforeunload = () => dispatchRunning ? 'Disparo em andamento.' : undefined;
 
+window.addEventListener('beforeunload', () => {
+  if (activeEventSource) activeEventSource.close();
+});
+
 // ================================================================
 // INIT
 // ================================================================
 async function init() {
+  const cfg = await fetch('/api/config/public').then(r => r.json());
+  sbClient = supabase.createClient(cfg.supabase_url, cfg.supabase_anon);
   const { data: { session } } = await sbClient.auth.getSession();
   if (session) {
     accessToken = session.access_token;
@@ -875,6 +886,7 @@ async function init() {
 
   sbClient.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_OUT' || !session) showLogin();
+    else if (session) accessToken = session.access_token;
   });
 }
 
@@ -1205,9 +1217,25 @@ function insertPlaceholder() {
 }
 
 async function apiFetch(path, opts = {}) {
-  const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}`, ...(opts.headers || {}) };
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${accessToken}`,
+    ...(opts.headers || {})
+  };
   const resp = await fetch(path, { ...opts, headers });
   if (!resp.ok) {
+    if (resp.status === 401) {
+      // Token expirado ou inválido — desloga e redireciona ao login
+      console.warn('apiFetch: 401 recebido, sessão encerrada.');
+      if (sbClient) await sbClient.auth.signOut();
+      accessToken = null;
+      showLogin();
+      return null;
+    }
+    if (resp.status === 403) {
+      const e = await resp.json().catch(() => ({ detail: 'Sem permissão.' }));
+      throw new Error(e.detail || 'Sem permissão para esta ação.');
+    }
     const e = await resp.json().catch(() => ({ detail: resp.statusText }));
     throw new Error(e.detail || 'Erro na requisição.');
   }
@@ -1361,15 +1389,31 @@ async function startDispatch() {
   }
 }
 
-function listenSSE() {
-  const src = new EventSource(`/api/dispatch/stream?token=${encodeURIComponent(accessToken)}`);
+async function listenSSE() {
+  if (typeof activeEventSource !== 'undefined' && activeEventSource) {
+    activeEventSource.close();
+    activeEventSource = null;
+  }
 
-  src.onmessage = (e) => {
+  let streamUrl;
+  try {
+    const { stream_token } = await apiFetch('/api/dispatch/stream-token', { method: 'POST' });
+    streamUrl = `/api/dispatch/stream?stream_token=${encodeURIComponent(stream_token)}`;
+  } catch (e) {
+    // fallback: usa token na URL se stream-token falhar
+    console.warn('stream-token falhou, usando fallback:', e.message);
+    streamUrl = `/api/dispatch/stream?token=${encodeURIComponent(accessToken)}`;
+  }
+
+  activeEventSource = new EventSource(streamUrl);
+
+  activeEventSource.onmessage = (e) => {
     const ev = JSON.parse(e.data);
     if (ev.type === 'ping') return;
     handleEvent(ev);
     if (ev.type === 'done') {
-      src.close();
+      activeEventSource.close();
+      activeEventSource = null;
       dispatchRunning = false;
       document.getElementById('live-indicator').classList.add('hidden');
       document.getElementById('live-indicator').classList.remove('flex');
@@ -1378,8 +1422,9 @@ function listenSSE() {
     }
   };
 
-  src.onerror = () => {
-    src.close();
+  activeEventSource.onerror = () => {
+    if (activeEventSource) activeEventSource.close();
+    activeEventSource = null;
     dispatchRunning = false;
     document.getElementById('live-indicator').classList.add('hidden');
   };
@@ -1459,41 +1504,50 @@ async function downloadLog() {
 // ================================================================
 // HISTORY
 // ================================================================
-async function loadHistory() {
-  document.getElementById('history-list').innerHTML = `
-    <div class="py-10 text-center text-slate-500 text-sm">
-      <svg class="w-6 h-6 mx-auto animate-spin mb-2 text-primary" fill="none" viewBox="0 0 24 24">
-        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-      </svg>Carregando...
-    </div>`;
+let historyPage = 1;
+let historyHasMore = false;
+
+async function loadHistory(reset = true) {
+  if (reset) {
+    historyPage = 1;
+    document.getElementById('history-list').innerHTML = `
+      <div class="py-10 text-center text-slate-500 text-sm">
+        <svg class="w-6 h-6 mx-auto animate-spin mb-2 text-primary" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        </svg>Carregando...
+      </div>`;
+  }
   try {
-    const data = await apiFetch('/api/dispatches');
-    renderHistory(data.dispatches);
+    const data = await apiFetch(`/api/dispatches?page=${historyPage}&page_size=20`);
+    historyHasMore = data.has_more;
+    if (reset) renderHistory(data.dispatches);
+    else appendHistory(data.dispatches);
+    document.getElementById('history-more-container').classList.toggle('hidden', !historyHasMore);
   } catch(e) {
     document.getElementById('history-list').innerHTML = `<p class="text-red-400 text-sm py-6 text-center">Erro: ${esc(e.message)}</p>`;
   }
 }
 
-function renderHistory(dispatches) {
-  const container = document.getElementById('history-list');
-  if (!dispatches.length) {
-    container.innerHTML = `
-      <div class="py-16 text-center text-slate-500">
-        <svg class="w-12 h-12 mx-auto mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
-        <p>Nenhum disparo encontrado.</p>
-      </div>`;
-    return;
-  }
+function appendHistory(dispatches) {
+  document.getElementById('history-list').insertAdjacentHTML('beforeend', renderHistoryItems(dispatches));
+}
 
-  container.innerHTML = dispatches.map(d => {
+function loadMoreHistory() {
+  historyPage++;
+  loadHistory(false);
+}
+
+function renderHistoryItems(dispatches) {
+  return dispatches.map(d => {
     const statusColor = {
       running: 'text-yellow-400 bg-yellow-400/10 border-yellow-400/30',
       completed: 'text-green-400 bg-green-400/10 border-green-400/30',
       error: 'text-red-400 bg-red-400/10 border-red-400/30',
+      interrupted: 'text-orange-400 bg-orange-400/10 border-orange-400/30',
     }[d.status] || 'text-slate-400 bg-slate-400/10 border-slate-400/30';
 
-    const statusLabel = { running: 'Em andamento', completed: 'Concluído', error: 'Erro' }[d.status] || d.status;
+    const statusLabel = { running: 'Em andamento', completed: 'Concluído', error: 'Erro', interrupted: 'Interrompido' }[d.status] || d.status;
     const sourceLabel = d.source_type === 'sheets' ? '📊 Google Sheets' : d.source_type === 'hubspot' ? '🔗 HubSpot' : `📄 ${d.source_filename || 'CSV'}`;
     const pct = d.total_contacts ? Math.round((d.sent_count / d.total_contacts) * 100) : 0;
 
@@ -1519,12 +1573,38 @@ function renderHistory(dispatches) {
         <div class="flex-1 bg-slate-800 rounded-full h-1.5 mr-4">
           <div class="bg-primary h-1.5 rounded-full transition-all" style="width:${pct}%"></div>
         </div>
-        <button onclick="openModal('${d.id}', '${fmtDate(d.started_at)}')" class="text-xs text-primary hover:underline shrink-0">
-          Ver logs →
-        </button>
+        <div class="flex items-center gap-3 shrink-0">
+          ${d.status === 'interrupted' ? `<button onclick="resumeDispatch('${d.id}')" class="text-xs text-orange-400 border border-orange-400/30 bg-orange-400/10 hover:bg-orange-400/20 px-3 py-1 rounded-full transition-colors">↺ Retomar</button>` : ''}
+          <button onclick="openModal('${d.id}', '${fmtDate(d.started_at)}')" class="text-xs text-primary hover:underline">Ver logs →</button>
+        </div>
       </div>
     </div>`;
   }).join('');
+}
+
+function renderHistory(dispatches) {
+  const container = document.getElementById('history-list');
+  if (!dispatches.length) {
+    container.innerHTML = `
+      <div class="py-16 text-center text-slate-500">
+        <svg class="w-12 h-12 mx-auto mb-3 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/></svg>
+        <p>Nenhum disparo encontrado.</p>
+      </div>`;
+    return;
+  }
+  container.innerHTML = renderHistoryItems(dispatches);
+}
+
+async function resumeDispatch(dispatchId) {
+  if (!confirm('Retomar este disparo de onde parou?')) return;
+  try {
+    const res = await apiFetch(`/api/dispatch/${dispatchId}/resume`, { method: 'POST' });
+    if (!res) return;
+    alert(`Disparo retomado a partir do contato ${res.resumed_from + 1} (${res.remaining} restantes).`);
+    loadHistory(true);
+  } catch (e) {
+    alert('Erro ao retomar disparo: ' + e.message);
+  }
 }
 
 async function openModal(dispatchId, title) {
@@ -1635,12 +1715,17 @@ function showConfigFeedback(type, msg) {
 // NAVIGATION — suporta clientes, owner mapping e histórico
 // ================================================================
 function navigate(page) {
+  const pageEl = document.getElementById('page-' + page);
+  if (!pageEl) {
+    console.warn(`navigate: página '${page}' não existe no DOM — ignorado.`);
+    return;
+  }
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => {
     n.classList.remove('active');
     n.classList.add('text-slate-400');
   });
-  document.getElementById('page-' + page).classList.add('active');
+  pageEl.classList.add('active');
   const btn = document.getElementById('nav-' + page);
   if (btn) { btn.classList.add('active'); btn.classList.remove('text-slate-400'); }
   if (page === 'historico') loadHistory();
@@ -1776,9 +1861,8 @@ function dispatchSelected() {
   csvContacts = contactsForDispatch;
   currentSource = 'clients';
   navigate('novo');
-  // Atualiza UI do disparo
-  document.getElementById('contacts-count').textContent = contacts.length;
-  document.getElementById('contacts-count').parentElement.classList.remove('hidden');
+  renderTable(contacts);
+  updateContactsInfo(contacts);
 }
 
 // ================================================================
@@ -1826,8 +1910,8 @@ function closePostCallModal() {
 
 function togglePostCallSchedule(on) {
   document.getElementById('postcall-schedule-fields').classList.toggle('hidden', !on);
-  document.getElementById('postcall-send-btn').querySelector('svg + span, svg ~ *') ;
-  document.getElementById('postcall-send-btn').lastChild.textContent = on ? ' Agendar' : ' Enviar';
+  const label = document.getElementById('postcall-send-btn').querySelector('span:last-of-type');
+  if (label) label.textContent = on ? 'Agendar' : 'Enviar';
 }
 
 async function sendPostCall() {
@@ -1860,7 +1944,7 @@ async function sendPostCall() {
   } catch(e) {
     showFeedback('postcall-feedback', 'error', 'Erro: ' + e.message);
   } finally {
-    document.getElementById('postcall-spinner').classList.remove('hidden');
+    document.getElementById('postcall-spinner').classList.add('hidden');
     document.getElementById('postcall-send-btn').disabled = false;
   }
 }
